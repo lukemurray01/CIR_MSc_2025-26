@@ -1,0 +1,3 @@
+variant,regime,n_paths,n_steps,terminal_mean,exact_mean,rel_mean_error,ks_vs_exact,mass_at_zero,mass_below_1e4
+LKvD full truncation,E,100000,64,0.02001010507812451,0.02,0.0005052539062255085,0.44892,0.44892,0.46479
+Absorption,E,100000,64,0.0313987694600939,0.02,0.569938473004695,0.3632198873221228,0.13685,0.14135
