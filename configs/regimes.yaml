@@ -1,0 +1,25 @@
+shared: 
+  kappa: 2.0
+  theta: 0.02
+  x0: 0.02
+
+regimes:
+  A:
+    sigma: 0.10
+    description: Feller well satisfied
+  
+  B:
+    sigma: 0.20
+    description: Feller satisfied
+
+  C:
+    sigma: 0.282842712474619
+    description: Feller boundary
+
+  D: 
+    sigma: 0.5
+    description: Feller-violating
+  
+  E:
+    sigma: 0.80
+    description: Strong Feller violation
