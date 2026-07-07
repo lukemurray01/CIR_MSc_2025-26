@@ -1,0 +1,30 @@
+{
+  "lambda_value": 0.05,
+  "final_time": 1.0,
+  "initial_y": 0.02,
+  "n_paths": 1000,
+  "reference_power": 14,
+  "n_paper_a_values": 40,
+  "a_min": 0.04,
+  "a_max": 1.6,
+  "include_a0_diagnostic": true,
+  "kappas": [
+    2.0,
+    0.2
+  ],
+  "levels": [
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "rho": 64,
+  "fine_steps_per_chunk": 16384,
+  "a_batch_size": 40,
+  "fixed_step_source": "hmax",
+  "fit_x_source": "hmax",
+  "plot_ef_y_diagnostic": false,
+  "seed": 120339106
+}
