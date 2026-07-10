@@ -21,7 +21,10 @@ src/samplers/     schemes: FTE, projected Euler, Kelly–Lord splitting
 src/metrics/      strong error, weak error (g1–g4), distributional (KS, W1),
                   boundary diagnostics
 src/utils/        RNG, Brownian increments/aggregation/bridge, params, IO
-klm_jax/          JAX (FP64) KLM kernel + Fig.-3 sweep
+src/jax_schemes.py  JAX (FP64) analogues of the src/samplers/ schemes:
+                  fixed-step kernels (FTE, ProjEuler, KL, BLT), device-side
+                  noise, KLM backstopped adaptive kernel, IF reference
+klm_jax/          JAX Fig.-3 sweep driver (uses src/jax_schemes.py)
 experiments/      figure- and table-producing scripts (see below)
 tests/            pytest suite, including CPU/JAX parity tests
 ```
