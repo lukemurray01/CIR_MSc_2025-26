@@ -13,11 +13,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from klm_jax.backstop import (
+from klm_jax.coefficients import sigma_from_a
+from src.jax_schemes import (
     if_terminal_from_fine_dW_jax,
     klm_backstop_terminal_from_fine_dW_jax,
 )
-from klm_jax.coefficients import sigma_from_a
 
 jax.config.update("jax_enable_x64", True)
 
