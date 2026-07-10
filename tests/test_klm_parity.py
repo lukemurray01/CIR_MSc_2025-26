@@ -1,7 +1,7 @@
 # CPU/JAX parity for the KLM backstopped adaptive scheme.
 #
 # The NumPy implementation in src/samplers/klm_backstop.py is the reference
-# logic; the JAX implementation in klm_jax/backstop.py is the accelerated
+# logic; the JAX implementation in src/jax_schemes.py is the accelerated
 # logic.  Both consume the same fine Brownian increments with the same
 # grid-quantised step policy, so their terminal values must agree to
 # floating-point tolerance path by path.  This is the CPU/JAX validation
@@ -13,7 +13,7 @@ import yaml
 
 jax = pytest.importorskip("jax")
 
-from klm_jax.backstop import (  # noqa: E402
+from src.jax_schemes import (  # noqa: E402
     if_terminal_from_fine_dW_jax,
     klm_backstop_terminal_from_fine_dW_jax,
 )

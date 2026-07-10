@@ -11,7 +11,7 @@ import yaml
 
 jax = pytest.importorskip("jax")
 
-from klm_jax.fixed_step import (  # noqa: E402
+from src.jax_schemes import (  # noqa: E402
     blt_terminal_from_noise_jax,
     brownian_increments_with_infima_jax,
     fte_terminal_from_dW_jax,

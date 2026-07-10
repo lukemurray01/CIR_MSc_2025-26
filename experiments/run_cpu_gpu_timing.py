@@ -142,13 +142,13 @@ def numpy_runners(params, T, n_steps, h_max, seed, klm_rho):
 def jax_runners(params, T, n_steps, h_max, seed, klm_rho):
     import jax
 
-    from klm_jax.backstop import klm_backstop_terminal_from_fine_dW_jax
-    from klm_jax.fixed_step import (
+    from src.jax_schemes import (
         blt_terminal_from_noise_jax,
         brownian_increments_jax,
         brownian_increments_with_infima_jax,
         fte_terminal_from_dW_jax,
         kl_uniform_terminal_from_dW_jax,
+        klm_backstop_terminal_from_fine_dW_jax,
         projected_euler_terminal_from_dW_jax,
     )
 

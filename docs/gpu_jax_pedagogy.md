@@ -87,7 +87,7 @@ Three things changed, and only three:
    new one*. Which brings us to your second question.
 
 A real example of exactly this pattern in the repo:
-`if_terminal_from_fine_dW_jax` in `klm_jax/backstop.py` is the drift-implicit
+`if_terminal_from_fine_dW_jax` in `src/jax_schemes.py` is the drift-implicit
 reference scheme written as a `lax.scan` — twelve lines.
 
 ---
@@ -125,8 +125,8 @@ as it actually is:
 | `rng.standard_normal(k)` (stateful) | `jax.random.normal(key, (k,))` (explicit key) |
 
 Every left-hand idiom appears in our NumPy samplers; every right-hand one in
-`klm_jax/`. The translation is mechanical once you see that mutation was
-never load-bearing.
+`src/jax_schemes.py`. The translation is mechanical once you see that mutation
+was never load-bearing.
 
 ### 2.2 Why JAX insists — and why you win
 
@@ -219,7 +219,7 @@ else:
 ```
 
 On a GPU you do not branch — you **evaluate both branches for every lane and
-select pointwise**. From `klm_jax/backstop.py`, lightly abridged:
+select pointwise**. From `src/jax_schemes.py`, lightly abridged:
 
 ```python
 y_explicit = y + (alpha/y + beta*y)*h + gamma*dW        # everyone computes this
@@ -320,7 +320,7 @@ trigger counts out, to 1e-9.
 ## 4. The full adaptive kernel, annotated
 
 The complete state of the coupled KLM kernel
-(`klm_jax/backstop.py::klm_backstop_terminal_from_fine_dW_jax`) is three
+(`src/jax_schemes.py::klm_backstop_terminal_from_fine_dW_jax`) is three
 arrays:
 
 ```python
@@ -411,7 +411,7 @@ serial algorithm defines.
 - **Recompilation.** `jit` specialises on shapes and dtypes; changing
   `n_paths` triggers a fresh compile. Keep benchmark shapes fixed.
 - **Keys are not seeds.** Never reuse a key for two draws; `split`/`fold_in`
-  and thread keys explicitly (see any `klm_jax` function).
+  and thread keys explicitly (see any `src/jax_schemes.py` function).
 - **Cross-backend RNG differs.** NumPy (PCG64) and JAX (threefry) produce
   different streams from "the same seed" — compare implementations only on
   pre-generated increments (as the parity tests do), or at distribution level.
@@ -421,9 +421,9 @@ serial algorithm defines.
 | Concept | File |
 |---|---|
 | NumPy fixed-step reference | `src/samplers/full_truncation_euler.py`, `lamperti_implicit.py` |
-| JAX fixed-step (`scan`) | `klm_jax/backstop.py::if_terminal_from_fine_dW_jax` |
+| JAX fixed-step (`scan`) | `src/jax_schemes.py::if_terminal_from_fine_dW_jax` |
 | NumPy adaptive (masked, mutable) | `src/samplers/klm_backstop.py` |
-| JAX adaptive (`while_loop`, immutable) | `klm_jax/backstop.py::klm_backstop_terminal_from_fine_dW_jax` |
+| JAX adaptive (`while_loop`, immutable) | `src/jax_schemes.py::klm_backstop_terminal_from_fine_dW_jax` |
 | Bit-level parity between the two | `tests/test_klm_parity.py` |
 | Counter-based RNG replay at 2^-25 | `experiments/klm_fig2a_streaming.py` (`make_brownian_increment_chunk`) |
 | Standalone CIR benchmark notebooks | `notebooks/kaggle/kaggle_cir_benchmark_suite.ipynb` (NumPy), `notebooks/kaggle/kaggle_cir_benchmark_suite_JAX.ipynb` (JAX) |

@@ -32,7 +32,7 @@ def main() -> None:
 
     rng = make_rng(experiments_config["shared"]["master_seed"])
 
-    fig, axes = plt.subplots(2, 3, figsize=(12,6), sharey = True)
+    fig, axes = plt.subplots(3, 2, figsize=(10,7.5), sharey = True)
     axes = axes.ravel()
 
     for ax, regime_name in zip(axes[:5], regimes):
@@ -88,8 +88,11 @@ def main() -> None:
         ax.set_ylim(0.0, 90.0)
         ax.grid(alpha = GRID_ALPHA)
     
+    # 3x2 grid (row-major):  [A][B] / [C][D] / [E][legend]
+    # Left column = axes 0,2,4 -> y-labels; bottom of each column = axes 4,3 -> x-labels.
     axes[0].set_ylabel("Density")
-    axes[3].set_ylabel("Density")
+    axes[2].set_ylabel("Density")
+    axes[4].set_ylabel("Density")
     axes[3].set_xlabel(r"$X_T$")
     axes[4].set_xlabel(r"$X_T$")
 
@@ -112,51 +115,56 @@ def main() -> None:
         label="histogram / density fill",
     )
 
-    axes[5].legend(
+    leg = axes[5].legend(
         handles=[line, fill],
         title="Legend",
-        loc="upper left",
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.02),
         frameon=True,
+        fontsize=13,
+        title_fontsize=14,
     )
 
-    axes[5].text(
-        0.0,
-        0.50,
-        r"Exact law: $X_T \mid X_0$ is noncentral $\chi^{2}$."
-        "\n"
-        rf"$T={T:g}$, $M={n_paths:,}$ samples per regime.",
-        transform=axes[5].transAxes,
-        fontsize=10,
-        va="top",
-    )
+    # Regime-colour key, stacked below the legend's actual drawn extent so the
+    # two never overlap regardless of the cell height. (The sampling details
+    # -- exact law X_T|X_0 ~ noncentral chi-squared, T and M -- live in the
+    # LaTeX figure caption to keep this compact cell uncluttered.)
+    fig.canvas.draw()
+    leg_bb = leg.get_window_extent().transformed(axes[5].transAxes.inverted())
+    key_title_y = leg_bb.y0 - 0.10
+    dot_y = key_title_y - 0.16
+    label_y = dot_y - 0.12
 
     axes[5].text(
-        0.0,
-        0.26,
+        0.5,
+        key_title_y,
         "Regime colours",
         transform=axes[5].transAxes,
-        fontsize=10,
+        fontsize=13,
         va="top",
+        ha="center",
     )
 
+    # Five dots labelled A--E, centred horizontally (span 0.11*4=0.44).
     for i, name in enumerate(["A", "B", "C", "D", "E"]):
-        x = 0.05 + 0.11 * i
+        x = 0.28 + 0.11 * i
 
         axes[5].scatter(
             x,
-            0.16,
+            dot_y,
             color=REGIME_COLOURS[name],
-            s=35,
+            s=55,
             transform=axes[5].transAxes,
         )
 
         axes[5].text(
             x,
-            0.075,
+            label_y,
             name,
             ha="center",
+            va="center",
             transform=axes[5].transAxes,
-            fontsize=9,
+            fontsize=12,
         )
 
     fig.tight_layout()

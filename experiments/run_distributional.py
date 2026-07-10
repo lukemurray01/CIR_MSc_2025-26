@@ -54,7 +54,7 @@ def load_config(filename):
 
 def get_args():
     parser = argparse.ArgumentParser(description="Terminal-law diagnostics.")
-    parser.add_argument("--n-paths", type=int, default=50000)
+    parser.add_argument("--n-paths", type=int, default=200000)
     parser.add_argument("--regimes", nargs="+", default=["A", "C", "E"])
     return parser.parse_args()
 
