@@ -19,6 +19,8 @@
 # strong-error diagnostics at the 1e-5 error scale (thesis background
 # chapter, computational-cost section).
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 
@@ -122,12 +124,16 @@ def brownian_increments_jax(key, n_paths, n_steps, dt):
     return (dt ** 0.5) * jax.random.normal(key, (n_paths, n_steps), dtype=jnp.float64)
 
 
+@partial(jax.jit, static_argnums=(1, 2))
 def brownian_increments_with_infima_jax(key, n_paths, n_steps, dt):
     """Device-side joint (increment, running infimum) pairs.
 
     Same Asmussen--Glynn--Pitman construction as
     src.utils.rng.make_brownian_increments_with_infima:
     m = (dW - sqrt(V + dW^2)) / 2 with V ~ Exp(1/(2*dt)) independent.
+    Jitted so XLA fuses the elementwise chain: run eagerly, V and two
+    temporaries are materialised as full-size FP64 buffers, which exceeds
+    the 16 GB P100 pool at 1e6 paths x 512 steps.
     """
     key_w, key_v = jax.random.split(key)
     dW = brownian_increments_jax(key_w, n_paths, n_steps, dt)
@@ -197,16 +203,20 @@ def klm_backstop_terminal_from_fine_dW_jax(
     m_min = max(int(round(h_min / dt_fine)), 1)
     m_max = max(int(jnp.floor(h_max / dt_fine)), 1)
 
-    W = jnp.concatenate(
-        [jnp.zeros((n_paths, 1), dtype=jnp.float64), jnp.cumsum(dW_fine, axis=1)],
-        axis=1,
-    )
+    # Bare cumulative sums; W_q is recovered as cs[q-1] with W_0 = 0.  Building
+    # the padded (n_paths, n_fine + 1) path array via concatenate keeps three
+    # full-size FP64 buffers live at once (dW_fine, the cumsum, the result),
+    # which exceeds the 16 GB P100 pool at 1e6 paths x 512 steps.
+    cs = jnp.cumsum(dW_fine, axis=1)
 
     y0 = jnp.full((n_paths,), jnp.sqrt(X0), dtype=jnp.float64)
     pos0 = jnp.zeros((n_paths,), dtype=jnp.int64)
     counters0 = jnp.zeros(3, dtype=jnp.int64)  # steps, min-trigger, neg-retake
 
     rows = jnp.arange(n_paths)
+
+    def w_at(pos):
+        return jnp.where(pos > 0, cs[rows, jnp.maximum(pos - 1, 0)], 0.0)
 
     def cond(state):
         _, pos, _ = state
@@ -224,7 +234,7 @@ def klm_backstop_terminal_from_fine_dW_jax(
         m = jnp.minimum(m, n_fine - pos)
 
         h = m * dt_fine
-        dW = W[rows, pos + m] - W[rows, pos]
+        dW = w_at(pos + m) - w_at(pos)
 
         # Zero-length steps (finished paths) keep y fixed through both maps.
         y_explicit = jnp.where(
