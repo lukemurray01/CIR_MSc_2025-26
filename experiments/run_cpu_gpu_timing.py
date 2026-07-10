@@ -92,6 +92,12 @@ def get_args():
     parser.add_argument("--reps", type=int, default=3,
                         help="Repetitions; the minimum wall time is reported.")
     parser.add_argument(
+        "--blt-batch-size", type=int, default=500_000,
+        help="Maximum BLT paths per noise batch. BLT needs both dW and Brownian "
+             "infima; batching prevents the two FP64 path-by-step arrays from "
+             "exhausting GPU memory (default: 500000).",
+    )
+    parser.add_argument(
         "--jax-platform", choices=["cpu", "gpu", "cuda"], default=None,
         help="Force the JAX backend via JAX_PLATFORMS (set before JAX is "
              "imported). 'cuda' fails loudly when no GPU is available "
@@ -100,7 +106,7 @@ def get_args():
     return parser.parse_args()
 
 
-def numpy_runners(params, T, n_steps, h_max, seed, klm_rho):
+def numpy_runners(params, T, n_steps, h_max, seed, klm_rho, blt_batch_size):
     """Callables n_paths -> terminal array; noise generation inside."""
     dt = T / n_steps
     common = dict(
@@ -132,15 +138,27 @@ def numpy_runners(params, T, n_steps, h_max, seed, klm_rho):
         return terminal
 
     def blt(n_paths):
+        # BLT needs two FP64 arrays, dW and the within-step Brownian infimum m.
+        # Generate and consume them in path batches so peak memory is
+        # O(blt_batch_size * n_steps), not O(n_paths * n_steps).
         rng = make_rng(seed)
-        dW, m = make_brownian_increments_with_infima(rng, n_paths, n_steps, dt)
-        return blt_terminal_from_noise(dt=dt, dW=dW, m=m, **common)
+        terminal_batches = []
+        for start in range(0, n_paths, blt_batch_size):
+            size = min(blt_batch_size, n_paths - start)
+            dW, m = make_brownian_increments_with_infima(
+                rng, size, n_steps, dt
+            )
+            terminal_batches.append(
+                blt_terminal_from_noise(dt=dt, dW=dW, m=m, **common)
+            )
+        return np.concatenate(terminal_batches)
 
     return {"FTE": fte, "ProjEuler": proj, "KL": kl, "KLM": klm, "BLT": blt}
 
 
-def jax_runners(params, T, n_steps, h_max, seed, klm_rho):
+def jax_runners(params, T, n_steps, h_max, seed, klm_rho, blt_batch_size):
     import jax
+    import jax.numpy as jnp
 
     from src.jax_schemes import (
         blt_terminal_from_noise_jax,
@@ -173,8 +191,23 @@ def jax_runners(params, T, n_steps, h_max, seed, klm_rho):
         return terminal
 
     def blt(n_paths):
-        dW, m = brownian_increments_with_infima_jax(key, n_paths, n_steps, dt)
-        return blt_terminal_from_noise_jax(dt=dt, dW=dW, m=m, **common)
+        # A 1e6 x 512 FP64 dW or m array is 4.096 GB; materialising both plus
+        # generator/transpose temporaries exhausts a 16 GB P100. Each batch is
+        # synchronised before the next allocation so those large buffers cannot
+        # overlap. Only the small terminal vectors are retained.
+        terminal_batches = []
+        for batch_id, start in enumerate(range(0, n_paths, blt_batch_size)):
+            size = min(blt_batch_size, n_paths - start)
+            batch_key = jax.random.fold_in(key, batch_id)
+            dW, m = brownian_increments_with_infima_jax(
+                batch_key, size, n_steps, dt
+            )
+            terminal = blt_terminal_from_noise_jax(
+                dt=dt, dW=dW, m=m, **common
+            )
+            terminal.block_until_ready()
+            terminal_batches.append(terminal)
+        return jnp.concatenate(terminal_batches)
 
     return {
         "FTE": with_increments(fte_terminal_from_dW_jax),
@@ -198,6 +231,8 @@ def time_call(fn, n_paths, reps, sync=None):
 
 def main():
     args = get_args()
+    if args.blt_batch_size < 1:
+        raise SystemExit("--blt-batch-size must be a positive integer")
 
     # Must happen before the first JAX import anywhere in the process.
     if args.jax_platform is not None:
@@ -247,10 +282,18 @@ def main():
 
     print(f"Regime {args.regime}, n_steps={args.n_steps}, "
           f"KLM h_max=1/{args.klm_h_max_denominator}; JAX backend: {jax_backend}")
+    if "BLT" in args.schemes:
+        print(f"  BLT path batch size: {args.blt_batch_size:,}")
 
-    np_run = numpy_runners(params, T, args.n_steps, h_max, master_seed, args.klm_rho)
+    np_run = numpy_runners(
+        params, T, args.n_steps, h_max, master_seed, args.klm_rho,
+        args.blt_batch_size,
+    )
     if have_jax:
-        jx_run = jax_runners(params, T, args.n_steps, h_max, master_seed, args.klm_rho)
+        jx_run = jax_runners(
+            params, T, args.n_steps, h_max, master_seed, args.klm_rho,
+            args.blt_batch_size,
+        )
 
         def sync(out):
             out.block_until_ready()
