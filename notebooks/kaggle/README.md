@@ -25,10 +25,21 @@ check, set the appropriate environment variable before running the cell:
 
 For production JAX CIR benchmark-suite runs, the full-mode A-E strong
 benchmark now uses a streamed HH reference with `CIR_SUITE_REFERENCE_POWER=22`
-(`h_ref = 2^-22`) by default, with `CIR_SUITE_N_PATHS=2048`. The run is batched with
+(`h_ref = 2^-22`) by default, with `CIR_SUITE_N_PATHS=20000` (the thesis
+methodology-chapter path count; use the checkpoint/resume support to split the
+run across Kaggle sessions). The run is batched with
 `CIR_SUITE_PATH_BATCH_SIZE` and `CIR_SUITE_CHUNK_STEPS`, so it should be run on
 Kaggle GPU rather than locally. The compact JAX Fig. 3 sweep remains separate
 and defaults to `CIR_SUITE_FIG3_REFERENCE_POWER=16`.
+
+The reference-ladder notebook is the deep sensitivity gate: it measures every
+scheme against HH references at all rungs of `CIR_SUITE_REFERENCE_GRID`
+(default `4096,16384,32768`) built from one shared fine Brownian path. For the
+KLM-paper-depth D/E evidence run it with
+`CIR_SUITE_REFERENCE_GRID="32768,1048576,33554432"` (2^15, 2^20, 2^25),
+`CIR_SUITE_ADAPTIVE_GRID_STEPS=131072`. Memory is bounded by
+`CIR_SUITE_MEM_BUDGET_GB` (default 8, sized for the 16 GB P100) via automatic
+path batching; a streamed-vs-materialised HH parity check runs at startup.
 
 ## Contents
 
@@ -37,6 +48,7 @@ and defaults to `CIR_SUITE_FIG3_REFERENCE_POWER=16`.
 | `kaggle_cir_benchmark_suite.ipynb` | CPU/NumPy monolithic cell | Strong error, KLM diagnostics, terminal-law diagnostics, CEV extension, and summary figures; CPU-bound |
 | `kaggle_cir_benchmark_suite_JAX.ipynb` | GPU/JAX monolithic cell | JAX strong benchmark and JAX Fig. 3 order sweep |
 | `kaggle_reference_sensitivity.ipynb` | GPU/JAX monolithic cell | Reference-sensitivity gate for strong benchmark and compact Fig. 3 fitted orders |
+| `kaggle_reference_ladder_JAX.ipynb` | GPU/JAX monolithic cell | Deep reference ladder (streamed HH rungs to `h_ref = 2^-25` on one shared Brownian path): sensitivity CSV + order-vs-delta summary figure with bars |
 | `kaggle_four_scheme_regime_rates_JAX.ipynb` | GPU/JAX monolithic cell | Four-scheme fitted-rate sweep over thesis regimes A-E, with side-by-side kappa panels |
 | `kaggle_klm_fig2a.ipynb` | CPU/NumPy paper-logic port | KLM Fig. 2(a) bridge-streaming logic; full h_ref = 2^-25 by default, smoke available |
 | `kaggle_klm_fig2a_JAX.ipynb` | JAX/GPU paper reproduction | KLM Fig. 2(a), h_ref = 2^-25, M = 1000; paper-scale route |
@@ -63,6 +75,13 @@ and defaults to `CIR_SUITE_FIG3_REFERENCE_POWER=16`.
   gate. It compares strong-reference grids `4096,16384,32768` and compact
   Fig. 3 powers `14,16,18`, writing the four sensitivity CSVs and two summary
   PDFs under `/kaggle/working/cir_reference_sensitivity_outputs`.
+- The reference-ladder notebook extends the strong-error gate to
+  KLM-paper-depth references (streamed, so `2^-25` fits on the P100). All
+  rungs share one fine Brownian path, so fitted-order drift across rungs is
+  pure reference effect. Its `strong_reference_sensitivity_orders.csv` matches
+  the schema `experiments/fig_order_summary.py` reads from
+  `outputs/reference_sensitivity/`, so the local summary figure can draw its
+  sensitivity bars directly from the Kaggle output.
 - In the CIR benchmark notebooks, KL is the uniform Kelly-Lord scheme in
   regimes A-C. For regimes D-E the KL row is the Brownian-coupled adaptive
   soft-zero variant and is recorded as `scheme_variant=adaptive-soft-zero`.

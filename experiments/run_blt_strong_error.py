@@ -56,7 +56,10 @@ def get_args():
     )
     parser.add_argument("--regimes", nargs="+", default=["A", "B", "C", "D", "E"])
     parser.add_argument("--n-paths", type=int, default=20000)
-    parser.add_argument("--reference-n-steps", type=int, default=8192)
+    # 32768 matches the CIR strong benchmark; at the old 8192 the finest
+    # level (512) sat only a factor 16 below the reference, which biases the
+    # fitted slope of an order-1 scheme.
+    parser.add_argument("--reference-n-steps", type=int, default=32768)
     parser.add_argument(
         "--coarse-n-steps",
         nargs="+",

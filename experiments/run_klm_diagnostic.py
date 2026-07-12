@@ -33,7 +33,10 @@ from src.utils.cir_params import cir_delta, kl_alpha
 from src.utils.io import config_path, figure_path, results_path
 from src.utils.rng import make_rng
 
-H_MAX_LEVELS = [2.0**-k for k in range(3, 10)]  # 1/8 ... 1/512
+# 1/8 ... 1/2048: the two extra deep levels pin the slope of the slowly
+# decaying D/E projected-fallback bias instead of stopping where it is
+# still ~25% (h_max = 1/512).
+H_MAX_LEVELS = [2.0**-k for k in range(3, 12)]
 
 REGIME_COLOURS = {
     "A": "tab:blue",
@@ -51,7 +54,9 @@ def load_config(filename):
 
 def get_args():
     parser = argparse.ArgumentParser(description="KLM backstop-usage diagnostic.")
-    parser.add_argument("--n-paths", type=int, default=20000)
+    # 50k paths: the quantity plotted is a terminal-mean bias, so the MC
+    # standard error must stay well below the smallest bias on the deep levels.
+    parser.add_argument("--n-paths", type=int, default=50000)
     parser.add_argument("--rho", type=float, default=64.0)
     parser.add_argument(
         "--regimes", nargs="+", default=["A", "B", "C", "D", "E"]

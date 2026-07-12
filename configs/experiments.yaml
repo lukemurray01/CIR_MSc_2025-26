@@ -26,7 +26,10 @@ time_grids:
     n_steps: 100
 
   weak_error:
-    n_paths: 50000
+    # 200k paths halves the Monte Carlo floor twice over vs the old 50k, so
+    # the fit-refusal policy (|error| >= 2*MC-se) rescues the A-C points whose
+    # weak bias sits just below the old noise floor.
+    n_paths: 200000
     n_steps:
       - 4
       - 8
@@ -241,8 +244,14 @@ klm_fig3_jax:
 reference_sensitivity:
   strong_error:
     description: Same seed and plotted levels, varying HH reference resolution.
-    n_paths: 2000
-    regimes: [A, C, D, E]
+    # Gate paths must match the production benchmark (20000): the sensitivity
+    # bars drawn on the order-vs-delta summary decorate 20000-path points, so
+    # computing them at a tenth of the paths made the bars noisier than the
+    # points. Regime B included so no summary point lacks its bar.
+    # For references beyond 32768 (D/E convergence evidence) use the streamed
+    # deep ladder: notebooks/kaggle/kaggle_reference_ladder_JAX.ipynb.
+    n_paths: 20000
+    regimes: [A, B, C, D, E]
     schemes: [FTE, ProjEuler, KL, KLM]
     coarse_n_steps: [16, 32, 64, 128, 256, 512]
     reference_n_steps: [4096, 16384, 32768]

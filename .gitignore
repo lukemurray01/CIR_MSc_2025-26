@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Figures
+figures/*.pdf
+figures/*.png
+!figures/.gitkeep
+
+# Data outputs
+results/
+outputs/
+*.csv
+*.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+src/*.egg-info/

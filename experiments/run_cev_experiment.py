@@ -37,10 +37,6 @@ from src.utils.brownian import aggregate_brownian_increments
 from src.utils.io import config_path, figure_path, results_path
 from src.utils.rng import make_rng
 
-COARSE_N_STEPS = [8, 16, 32, 64, 128, 256]
-REFERENCE_N_STEPS = 4096
-
-
 def load_config(filename):
     with open(config_path(filename), encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -51,6 +47,29 @@ def get_args():
     parser.add_argument("--betas", nargs="+", type=float, default=[0.5, 0.75])
     parser.add_argument("--regime", default="B")
     parser.add_argument("--n-paths", type=int, default=20000)
+    parser.add_argument(
+        "--reference-n-steps",
+        type=int,
+        default=32768,
+        help="Self-convergence reference resolution; matches the CIR strong "
+        "benchmark so the CEV extension is not the weakest-referenced "
+        "experiment in the suite.",
+    )
+    parser.add_argument(
+        "--coarse-n-steps",
+        nargs="+",
+        type=int,
+        default=[16, 32, 64, 128, 256, 512],
+        help="Coarse levels (must divide the reference); matches the CIR "
+        "strong-error grid.",
+    )
+    parser.add_argument(
+        "--path-batch-size",
+        type=int,
+        default=4000,
+        help="Paths per batch; keeps the fine-increment buffer ~1 GiB at the "
+        "default reference.",
+    )
     return parser.parse_args()
 
 
@@ -66,56 +85,79 @@ def main():
     T = experiments_cfg["shared"]["T"]
 
     kappa, theta, f0 = shared["kappa"], shared["theta"], shared["x0"]
-    dt_fine = T / REFERENCE_N_STEPS
+    reference_n_steps = args.reference_n_steps
+    coarse_n_steps = args.coarse_n_steps
+    for n_steps in coarse_n_steps:
+        if reference_n_steps % n_steps != 0:
+            raise ValueError(
+                f"reference_n_steps={reference_n_steps} is not divisible "
+                f"by coarse n_steps={n_steps}"
+            )
+    dt_fine = T / reference_n_steps
     exact_mean = cev_exact_mean(f0, kappa, theta, T)
 
     rows = []
     for beta in args.betas:
         rng = make_rng(master_seed)
-        dW_fine = np.sqrt(dt_fine) * rng.standard_normal(
-            (args.n_paths, REFERENCE_N_STEPS)
-        )
+        acc = {
+            n_steps: {"abs_sum": 0.0, "sq_sum": 0.0, "terminal_sum": 0.0}
+            for n_steps in coarse_n_steps
+        }
+        done = 0
+        while done < args.n_paths:
+            batch_n = min(args.path_batch_size, args.n_paths - done)
+            dW_fine = np.sqrt(dt_fine) * rng.standard_normal(
+                (batch_n, reference_n_steps)
+            )
 
-        reference = cev_projected_terminal_from_dW(
-            F0=f0,
-            kappa=kappa,
-            theta=theta,
-            sigma=sigma,
-            beta=beta,
-            dt=dt_fine,
-            dW=dW_fine,
-        )
-
-        for n_steps in COARSE_N_STEPS:
-            factor = REFERENCE_N_STEPS // n_steps
-            dt_coarse = dt_fine * factor
-            dW_coarse = aggregate_brownian_increments(dW_fine, factor)
-
-            terminal = cev_projected_terminal_from_dW(
+            reference = cev_projected_terminal_from_dW(
                 F0=f0,
                 kappa=kappa,
                 theta=theta,
                 sigma=sigma,
                 beta=beta,
-                dt=dt_coarse,
-                dW=dW_coarse,
+                dt=dt_fine,
+                dW=dW_fine,
             )
 
-            diff = terminal - reference
+            for n_steps in coarse_n_steps:
+                factor = reference_n_steps // n_steps
+                dW_coarse = aggregate_brownian_increments(dW_fine, factor)
+
+                terminal = cev_projected_terminal_from_dW(
+                    F0=f0,
+                    kappa=kappa,
+                    theta=theta,
+                    sigma=sigma,
+                    beta=beta,
+                    dt=dt_fine * factor,
+                    dW=dW_coarse,
+                )
+
+                diff = terminal - reference
+                acc[n_steps]["abs_sum"] += float(np.sum(np.abs(diff)))
+                acc[n_steps]["sq_sum"] += float(np.sum(diff**2))
+                acc[n_steps]["terminal_sum"] += float(np.sum(terminal))
+            done += batch_n
+
+        for n_steps in coarse_n_steps:
+            factor = reference_n_steps // n_steps
+            terminal_mean = acc[n_steps]["terminal_sum"] / args.n_paths
             rows.append(
                 {
                     "beta": beta,
                     "regime": args.regime,
                     "sigma": sigma,
-                    "dt": dt_coarse,
-                    "l1": float(np.mean(np.abs(diff))),
-                    "l2": float(np.sqrt(np.mean(diff**2))),
-                    "terminal_mean": float(np.mean(terminal)),
+                    "dt": dt_fine * factor,
+                    "l1": acc[n_steps]["abs_sum"] / args.n_paths,
+                    "l2": float(np.sqrt(acc[n_steps]["sq_sum"] / args.n_paths)),
+                    "terminal_mean": terminal_mean,
                     "exact_mean": exact_mean,
                     "rel_mean_error": float(
-                        abs(np.mean(terminal) - exact_mean) / exact_mean
+                        abs(terminal_mean - exact_mean) / exact_mean
                     ),
                     "n_paths": args.n_paths,
+                    "reference_n_steps": reference_n_steps,
                 }
             )
 

@@ -9,6 +9,7 @@ STANDALONE_NOTEBOOKS = [
     "kaggle_cir_benchmark_suite.ipynb",
     "kaggle_cir_benchmark_suite_JAX.ipynb",
     "kaggle_reference_sensitivity.ipynb",
+    "kaggle_reference_ladder_JAX.ipynb",
     "kaggle_four_scheme_regime_rates_JAX.ipynb",
     "kaggle_klm_fig2a.ipynb",
     "kaggle_klm_fig2a_JAX.ipynb",
@@ -87,7 +88,9 @@ def test_cir_benchmark_notebooks_are_monolithic_not_repo_snapshot_runners():
     assert "use_kl_adaptive = alpha < 0.0" in jax_source
     assert "CIR_SUITE_REFERENCE_POWER" in jax_source
     assert 'default_power=22' in jax_source
-    assert '"2048"' in jax_source
+    # Production default matches the thesis methodology chapter: 20000
+    # Brownian-coupled paths (batched; checkpoint/resume covers the runtime).
+    assert '"20000"' in jax_source
     assert "CIR_SUITE_PATH_BATCH_SIZE" in jax_source
     assert "stream_strong_chunk" in jax_source
     assert "run_config.json" in jax_source
@@ -113,6 +116,26 @@ def test_reference_sensitivity_notebook_is_standalone_gate():
     assert "strong_reference_sensitivity.csv" in source
     assert "fig3_reference_sensitivity.csv" in source
     assert "adaptive-soft-zero" in source
+
+
+def test_reference_ladder_notebook_is_streamed_deep_gate():
+    source = notebook_source("kaggle_reference_ladder_JAX.ipynb")
+
+    # Deep-reference ladder: streamed HH rungs on ONE shared Brownian path.
+    assert "CIR_SUITE_REFERENCE_GRID" in source
+    assert "4096,16384,32768" in source
+    assert "CIR_SUITE_ADAPTIVE_GRID_STEPS" in source
+    assert "CIR_SUITE_CHUNK_STEPS" in source
+    assert "CIR_SUITE_MEM_BUDGET_GB" in source
+    assert "def streaming_parity_check" in source
+    assert "def run_strong_error_suite" in source
+    assert "adaptive-soft-zero" in source
+    # Gate outputs consumed by experiments/fig_order_summary.py.
+    assert "strong_reference_sensitivity_orders.csv" in source
+    assert "jax_fig_order_vs_delta_summary" in source
+    # Thesis-grade sampling and the post-2026-07-05 ProjEuler floor.
+    assert 'N_PATHS = 20000' in source
+    assert "0.5 * sigma * np.sqrt(dt)" in source
 
 
 def test_klm_fig2a_notebooks_are_numpy_cpu_and_jax_gpu_split():
