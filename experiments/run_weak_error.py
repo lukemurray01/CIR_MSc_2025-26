@@ -589,6 +589,16 @@ ALPHA_GRID = np.linspace(-1.0, 3.0, 4001)
 # change what gets reported.
 DRIFT_MIN_GAP = 0.05
 
+# Above this reduced chi-square the power law is refused outright rather than
+# reported with a scaled interval.  The scale-factor treatment assumes mild
+# tension (chi2_red of a few); the floored and splitting schemes below the
+# Feller boundary reach 20-150 at 20,000 paths, and chi2 grows linearly with
+# path count, so at production they exceed 1000.  Widening the interval there
+# still presents the result as "a power law, imprecisely known", when the
+# measurement is saying the bias is not a power law at all.  Report the
+# fine-window slope instead.
+MISFIT_CHI2 = 10.0
+
 
 def _signed_power_fit(h, b, se):
     """Signed generalised least squares fit of b(h) = C h^alpha.
@@ -690,9 +700,11 @@ def fit_orders(rows):
         alpha, alpha_lo, alpha_hi, _C, chi2, n_used = _signed_power_fit(h, b, se)
 
         # Fine-window fit: a contiguous block at the fine end, declared by
-        # position rather than chosen by looking at the fit.
+        # position rather than chosen by looking at the fit.  This is what
+        # gets reported when the global power law is refused, so it carries
+        # its own fit quality.
         n_win = min(5, len(h))
-        alpha_fine, fine_lo, fine_hi, _, _, _ = _signed_power_fit(
+        alpha_fine, fine_lo, fine_hi, _, fine_chi2, _ = _signed_power_fit(
             h[:n_win], b[:n_win], se[:n_win])
 
         # Drift: compare disjoint coarse and fine halves.  Levels are
@@ -758,9 +770,20 @@ def fit_orders(rows):
         # refusal keeps its old meaning -- the bias sits below the noise
         # floor -- without the old policy's select-then-fit bias.
         resolved_cv = int(np.sum(np.abs(b) >= 2 * se))
+        refusal = ""
         if resolved_cv < 3:
+            # Too few levels carry a bias distinguishable from zero: nothing
+            # to fit anywhere on the ladder.
+            refusal = "unresolved"
             alpha = alpha_lo = alpha_hi = spread = np.nan
             alpha_fine = fine_lo = fine_hi = np.nan
+        elif np.isfinite(chi2) and chi2 > MISFIT_CHI2:
+            # The bias is measured well but is not a power law.  Refuse the
+            # global order and keep the fine-window slope, which is a
+            # statement about a stated range of h rather than a claim about
+            # an asymptotic rate.
+            refusal = "misfit"
+            alpha = alpha_lo = alpha_hi = spread = np.nan
 
         order_rows.append({
             "regime": regime,
@@ -770,10 +793,14 @@ def fit_orders(rows):
             "fitted_weak_order_lo": alpha_lo,
             "fitted_weak_order_hi": alpha_hi,
             "reduced_chi2": chi2,
+            "order_refused": refusal,
             "fitted_order_fine_window": alpha_fine,
             "fine_window_lo": fine_lo,
             "fine_window_hi": fine_hi,
+            "fine_window_chi2": fine_chi2,
             "fine_window_levels": n_win,
+            "fine_window_h_max": float(h[:n_win].max()) if len(h) else np.nan,
+            "fine_window_h_min": float(h[:n_win].min()) if len(h) else np.nan,
             "order_stability_spread": float(spread) if np.isfinite(spread) else np.nan,
             "order_coarse_half": alpha_coarse,
             "order_drift_gap": drift_gap,
@@ -881,16 +908,22 @@ def plot_regime(regime_name, rows, args, n_paths, out_path):
         ax.grid(True, which="both", alpha=0.3)
         ax.legend(fontsize=6.5)
 
-    estimator = ("direct" if args.no_control_variate
+    estimator = ("direct estimator" if args.no_control_variate
                  else "martingale control variate")
+    # Two short lines, not one long one: as a single line this overflowed the
+    # canvas width and matplotlib clipped it at both ends.
     fig.suptitle(
-        f"Weak error vs exact functionals, regime {regime_name} "
-        f"({n_paths} paths, {estimator}; open triangles: 95% upper bound "
-        "where the bias is below the noise floor; "
-        "g4 unavailable for adaptive schemes)",
-        fontsize=10,
+        f"Weak error against exact functionals — regime {regime_name}",
+        fontsize=12, y=0.985,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.text(
+        0.5, 0.945,
+        f"{n_paths:,} paths, {estimator}. Open triangles: 95% upper bound "
+        "where the bias is below the noise floor. "
+        "$g_4$ is not defined for the adaptive schemes.",
+        ha="center", va="top", fontsize=8.5, color="0.35",
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.925))
     fig.savefig(out_path)
     fig.savefig(Path(out_path).with_suffix(".png"), dpi=150)
     plt.close(fig)
@@ -984,19 +1017,24 @@ def main():
     print(f"wrote {orders_path}")
 
     for r in order_rows:
-        if np.isfinite(r["fitted_weak_order"]):
-            fitted = (f"{r['fitted_weak_order']:.3f} "
-                      f"[{r['fitted_weak_order_lo']:.3f},{r['fitted_weak_order_hi']:.3f}]")
-            if r["reduced_chi2"] > 3.0:
-                fitted += f"  MISFIT chi2red={r['reduced_chi2']:.1f}"
-            if r["order_drifting"]:
-                fitted += f"  DRIFTING (fine-coarse {r['order_drift_gap']:+.2f})"
-            if np.isfinite(r["fitted_order_fine_window"]):
-                fitted += f"  fine={r['fitted_order_fine_window']:.3f}"
+        if r["order_refused"] == "unresolved":
+            fitted = "REFUSED - bias below the noise floor at most levels"
+        elif r["order_refused"] == "misfit":
+            # Not a power law: quote the slope over a stated range of h.
+            fitted = (
+                f"NO SINGLE ORDER (chi2red={r['reduced_chi2']:.0f}); "
+                f"slope {r['fitted_order_fine_window']:.3f} "
+                f"[{r['fine_window_lo']:.3f},{r['fine_window_hi']:.3f}] over "
+                f"h={r['fine_window_h_min']:.2e}-{r['fine_window_h_max']:.2e}"
+            )
         else:
-            fitted = "refused (fewer than 3 resolved levels)"
+            fitted = (f"{r['fitted_weak_order']:.3f} "
+                      f"[{r['fitted_weak_order_lo']:.3f},{r['fitted_weak_order_hi']:.3f}]"
+                      f"  chi2red={r['reduced_chi2']:.1f}")
+            if r["order_drifting"]:
+                fitted += f"  DRIFTING ({r['order_drift_gap']:+.2f})"
         print(
-            f"  {r['regime']} {r['scheme']:<10} {r['payoff']}: order {fitted} "
+            f"  {r['regime']} {r['scheme']:<10} {r['payoff']}: {fitted} "
             f"({r['n_points_resolved']}/{r['n_points_total']} resolved; "
             f"legacy {r['fitted_weak_order_legacy']:.3f}; "
             f"local {r['local_slopes_fine_to_coarse']})"
