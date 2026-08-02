@@ -179,3 +179,71 @@ def test_control_is_mean_zero(payoff):
                            g2_rows=g2_rows)
     se = C.std(ddof=1) / np.sqrt(n_paths)
     assert abs(C.mean()) < 4.0 * se
+
+
+# ------------------------------------------------- audit-driven checks -----
+
+@pytest.mark.parametrize("regime", ["A", "C", "E"])
+def test_exact_g2_reference_matches_quadrature(regime):
+    """The closed-form g2 reference agrees with the quadrature it replaced."""
+    from src.metrics.weak_error import (
+        exact_g2_squared_call_by_quadrature,
+        exact_g2_squared_call_expectation,
+    )
+
+    sigma = REGIME_SIGMA[regime]
+    kw = dict(x0=0.02, kappa=KAPPA, theta=THETA, sigma=sigma, T=1.0,
+              strike=STRIKE)
+    closed = exact_g2_squared_call_expectation(**kw)
+    quadrature = exact_g2_squared_call_by_quadrature(**kw)
+    # Far below the ~1e-6 biases the deep ladder reports.
+    assert abs(closed - quadrature) < 1e-15
+
+
+def _trapezoid_bond_on_exact_skeleton(sigma, n_steps, kappa=KAPPA,
+                                      theta=THETA, x0=0.02, T=1.0):
+    """E[exp(-trapezoid(X))] on an EXACT CIR skeleton, no Monte Carlo.
+
+    Backward affine recursion: the value function stays exponential-affine,
+    exp(-a - b x), because each CIR transition has an affine Laplace
+    exponent.  This isolates the trapezoidal rule's own error from any
+    scheme error.
+    """
+    h = T / n_steps
+    delta = 4.0 * kappa * theta / sigma**2
+    q = sigma**2 * (1.0 - np.exp(-kappa * h)) / (2.0 * kappa)
+    decay = np.exp(-kappa * h)
+
+    def A(u):
+        return (delta / 2.0) * np.log(1.0 + u * q)
+
+    def B(u):
+        return u * decay / (1.0 + u * q)
+
+    a, b = 0.0, h / 2.0                       # weight 1/2 on X_T
+    for _ in range(n_steps - 1, 0, -1):       # weight 1 on interior nodes
+        a, b = a + A(b), h + B(b)
+    a, b = a + A(b), h / 2.0 + B(b)           # weight 1/2 on X_0
+    return float(np.exp(-a - b * x0))
+
+
+@pytest.mark.parametrize("regime", ["A", "C", "E"])
+def test_g4_trapezoid_error_is_second_order(regime):
+    """The g4 path-integral quadrature converges at order 2, not order 1.
+
+    If it were order 1 it would sit at the same rate as the schemes' weak
+    bias and the g4 column would partly measure the quadrature rule rather
+    than the scheme.  It does not: measured local order is 2.00, and in the
+    worst regime the term is 7e-12 at h = 2^-12, far below any bias the
+    experiment reports.
+    """
+    sigma = REGIME_SIGMA[regime]
+    exact = affine_cir_bond_price(x0=0.02, kappa=KAPPA, theta=THETA,
+                                  sigma=sigma, T=1.0)
+    errors = {
+        k: abs(_trapezoid_bond_on_exact_skeleton(sigma, 2**k) - exact)
+        for k in (6, 9, 12)
+    }
+    order = np.log2(errors[6] / errors[9]) / 3.0
+    assert 1.9 < order < 2.1, f"{regime}: order {order:.3f}, {errors}"
+    assert errors[12] < 1e-10

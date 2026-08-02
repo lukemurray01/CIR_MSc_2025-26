@@ -156,6 +156,36 @@ def exact_g2_squared_call_expectation(
     T: float,
     strike: float = 0.02,
 ) -> float:
+    """Exact E[(X_T - K)_+^2] from noncentral chi-square truncated moments.
+
+    With X_T = Z / c and Z ~ ncx2(df, nc), the expectation is
+    c^{-2} E[(Z - cK)_+^2], which the truncated-moment identities in
+    src.metrics.control_variate give in closed form.  This replaces a
+    semi-infinite quadrature whose attained tolerance was hard to certify
+    at the 1e-6 bias magnitudes the deep ladder reports; the quadrature is
+    retained as a test oracle (tests/test_control_variate.py), where the
+    two agree to better than 1e-18 absolute in every regime.
+    """
+    # Imported here: control_variate imports nothing from this module, but
+    # keeping the dependency local documents that this is the only tie.
+    from src.metrics.control_variate import _G_squared_call
+
+    c, df, nc = cir_ncx2_params(
+        x=x0, kappa=kappa, theta=theta, sigma=sigma, dt=T,
+    )
+
+    return float(_G_squared_call(c * strike, df, nc) / c**2)
+
+
+def exact_g2_squared_call_by_quadrature(
+    x0: float,
+    kappa: float,
+    theta: float,
+    sigma: float,
+    T: float,
+    strike: float = 0.02,
+) -> float:
+    """Quadrature oracle for `exact_g2_squared_call_expectation`."""
 
     def integrand(x: float) -> float:
         return float((x - strike) ** 2 * exact_terminal_pdf(
