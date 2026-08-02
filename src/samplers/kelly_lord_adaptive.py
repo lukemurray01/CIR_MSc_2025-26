@@ -20,9 +20,24 @@ def kl_adaptive_terminal(
         rng: np.random.Generator,
         rho: float = 2.0,
         max_rounds: int = 1_000_000,
+        dxu_fns: dict | None = None,
+        controls_out: dict | None = None,
 ) -> np.ndarray:
+    """Free-running adaptive soft-zero Kelly-Lord splitting scheme.
+
+    When `dxu_fns` maps a payoff name to d_x u(tau, x), the martingale
+    control variate sum_n sigma sqrt(X_n) d_x u(T - t_n, X_n) dW_n is
+    accumulated into `controls_out` in place.  Steps in the soft-zero region
+    are the deterministic ODE flow and contribute nothing; splitting steps
+    fix dt from the state before drawing dW, so E[C] = 0 exactly.
+    """
     alpha = kl_alpha(kappa, theta, sigma)
     X_zero = soft_zero_threshold(kappa, theta, dt_max, rho)
+
+    accumulate = bool(dxu_fns) and controls_out is not None
+    if accumulate:
+        for name in dxu_fns:
+            controls_out[name] = np.zeros(n_paths, dtype=float)
 
     x = np.full(n_paths, X0, dtype=float)
     t = np.zeros(n_paths, dtype=float)
@@ -84,6 +99,15 @@ def kl_adaptive_terminal(
         if np.any(in_splitting):
             h = dt[in_splitting]
             dW = np.sqrt(h) * rng.standard_normal(np.count_nonzero(in_splitting))
+
+            if accumulate:
+                x_s = x[in_splitting]
+                tau_s = dt_remaining[in_splitting]
+                for name, fn in dxu_fns.items():
+                    controls_out[name][in_splitting] += (
+                        sigma * np.sqrt(x_s) * fn(tau_s, x_s) * dW
+                    )
+
             inside_sqrt = x[in_splitting] + 2.0 * alpha * h
             # stop floating point round off such that it guarantees inside_sqrt > 0.
             if np.any(inside_sqrt < -1e-14):
