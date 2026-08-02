@@ -632,12 +632,29 @@ def _signed_power_fit(h, b, se):
     best = int(np.nanargmin(rss))
     alpha, rss_min = float(ALPHA_GRID[best]), float(rss[best])
 
-    within = np.isfinite(rss) & (rss <= rss_min + 3.841)
+    dof = max(len(h) - 2, 1)
+    chi2_red = rss_min / dof
+
+    # Widen the interval when the power law does not actually describe the
+    # data.  The s_k here are Monte Carlo standard errors from >=5000 paths
+    # and are well determined, so reduced chi-square well above 1 means the
+    # MODEL is wrong, not that the noise was underestimated -- the floored
+    # schemes below the boundary reach chi2_red of 8-14 over a coarse
+    # ladder.  Quoting the nominal RSS_min + 3.841 there gives an interval
+    # a factor sqrt(chi2_red) too narrow: regime-E ProjEuler g1 reported
+    # 0.341 [0.328, 0.354] on a fit missing the data by 13x in variance.
+    # Scaling by chi2_red is the usual scale-factor treatment (as used by
+    # the PDG) and is equivalent to inflating every s_k by
+    # sqrt(chi2_red).  A large `reduced_chi2` remains reportable in its own
+    # right: it is evidence against a single power law, and unlike the
+    # coarse/fine drift test it needs only three levels.
+    threshold = rss_min + 3.841 * max(chi2_red, 1.0)
+
+    within = np.isfinite(rss) & (rss <= threshold)
     lo = float(ALPHA_GRID[within].min()) if within.any() else np.nan
     hi = float(ALPHA_GRID[within].max()) if within.any() else np.nan
 
-    dof = max(len(h) - 2, 1)
-    return alpha, lo, hi, float(C[best]), rss_min / dof, int(len(h))
+    return alpha, lo, hi, float(C[best]), chi2_red, int(len(h))
 
 
 def fit_orders(rows):
@@ -970,6 +987,8 @@ def main():
         if np.isfinite(r["fitted_weak_order"]):
             fitted = (f"{r['fitted_weak_order']:.3f} "
                       f"[{r['fitted_weak_order_lo']:.3f},{r['fitted_weak_order_hi']:.3f}]")
+            if r["reduced_chi2"] > 3.0:
+                fitted += f"  MISFIT chi2red={r['reduced_chi2']:.1f}"
             if r["order_drifting"]:
                 fitted += f"  DRIFTING (fine-coarse {r['order_drift_gap']:+.2f})"
             if np.isfinite(r["fitted_order_fine_window"]):
