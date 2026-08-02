@@ -5,6 +5,16 @@ notebook contains the numerical kernels it needs directly in the cell, so it
 can be pasted into Kaggle without a git clone, a pushed branch, or imports from
 the local repository.
 
+**One exception.** `kaggle_weak_error_control_variate.ipynb` clones the repo
+instead of inlining its kernels. The weak-error benchmark shares the exact
+CIR value functions with `src/metrics/control_variate.py` and the samplers
+with `src/samplers/`, and inlining roughly 1,500 lines of that would create a
+second copy free to drift from the one the tests cover. The trade is that this
+notebook needs **Settings -> Internet -> On** (phone-verified account) and a
+branch pushed to the remote, and it is therefore excluded from
+`tests/test_standalone_kaggle_notebooks.py`. It needs no accelerator: the
+experiment is NumPy/CPU.
+
 ## Before use
 
 1. Import the `.ipynb` into Kaggle, or paste the single code cell into a new

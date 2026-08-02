@@ -114,12 +114,29 @@ def klm_backstop_terminal(
     rho: float = 64.0,
     backstop: str | None = None,
     max_rounds: int = 10_000_000,
+    dxu_fns: dict | None = None,
+    controls_out: dict | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Free-running KLM backstopped adaptive scheme (own Brownian increments).
 
     Returns (X_T, stats) where X_T = Y_T**2 and stats records total steps and
     how often each backstop trigger fired.
+
+    When `dxu_fns` maps a payoff name to d_x u(tau, x), the corresponding
+    martingale control variate
+
+        C = sum_n sigma sqrt(X_n) d_x u(T - t_n, X_n) dW_n
+
+    is accumulated into `controls_out` in place.  The proposed step
+    h_max * min(1, |y|) is a function of the state alone and is fixed BEFORE
+    dW is drawn, so each summand is F_{t_n}-measurable times a conditionally
+    centred increment and E[C] = 0 exactly -- including on the steps the
+    backstop retakes, which reuse the same increment.
     """
+    accumulate = bool(dxu_fns) and controls_out is not None
+    if accumulate:
+        for name in dxu_fns:
+            controls_out[name] = np.zeros(n_paths, dtype=float)
     alpha, beta, gamma = kl_coefficients(kappa, theta, sigma)
     kind = backstop if backstop is not None else default_backstop_kind(alpha)
     h_min = h_max / rho
@@ -148,6 +165,16 @@ def klm_backstop_terminal(
         h = np.minimum(h, T - t[idx])
 
         dW = np.sqrt(h) * rng.standard_normal(idx.size)
+
+        if accumulate:
+            # State and remaining time at the START of the step, in the
+            # original CIR coordinate: X = y^2, so sqrt(X) = |y|.
+            x_a = y_a**2
+            tau_a = T - t[idx]
+            for name, fn in dxu_fns.items():
+                controls_out[name][idx] += (
+                    sigma * np.abs(y_a) * fn(tau_a, x_a) * dW
+                )
 
         y_next = np.empty_like(y_a)
 
