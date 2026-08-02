@@ -584,6 +584,11 @@ def production_estimate(row):
 
 ALPHA_GRID = np.linspace(-1.0, 3.0, 4001)
 
+# Minimum coarse-to-fine change in the fitted order before drift is flagged.
+# Below this the order is window-dependent only in a sense too small to
+# change what gets reported.
+DRIFT_MIN_GAP = 0.05
+
 
 def _signed_power_fit(h, b, se):
     """Signed generalised least squares fit of b(h) = C h^alpha.
@@ -686,12 +691,18 @@ def fit_orders(rows):
             alpha_coarse, coarse_lo, coarse_hi, _, _, _ = _signed_power_fit(
                 h[half:], b[half:], se[half:])
             drift_gap = alpha_fine_h - alpha_coarse
-            # Disjoint 95% profile intervals => the order is window-dependent
-            # and no single alpha describes the ladder.
-            drifting = bool(
+            # Disjoint 95% profile intervals => window-dependent order.  The
+            # magnitude floor matters as much as the significance test: with
+            # variance reduction of 10^5 the intervals become so tight that
+            # ~1% curvature is formally significant, which would flag clean
+            # order-one schemes (uniform KL in regime A fits 0.989 with a
+            # profile interval of width 0.01).  Drift is only interesting
+            # when it would change the order actually reported.
+            separated = bool(
                 np.isfinite(fh_lo) and np.isfinite(coarse_hi)
                 and (fh_lo > coarse_hi or coarse_lo > fh_hi)
             )
+            drifting = bool(separated and abs(drift_gap) >= DRIFT_MIN_GAP)
         else:
             drift_gap, drifting = np.nan, False
 
