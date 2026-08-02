@@ -4,9 +4,14 @@ Methodology note and audit brief for `experiments/run_weak_error.py`,
 `src/metrics/control_variate.py`, and the Kaggle runner
 `notebooks/kaggle/kaggle_weak_error_control_variate.ipynb`.
 
-Branch: `feature/weak-error-control-variate`. Status: validated at small
-scale, **not yet run at production scale**. This document exists to be
-audited before that run is committed.
+Status: validated at small scale, **not yet run at production scale**.
+
+Revision 2 (post-audit). An external audit of revision 1 found one blocking
+defect and several real errors; §12 records what changed. The headline
+corrections: the rate fit has been replaced (the previous one was not what
+this document claimed it was), the adaptive `g2` lookup was quadratic in
+storage and would not have finished, and the `g4` and `g2` open questions
+from §10 are now closed by validation tests rather than left open.
 
 ---
 
@@ -108,9 +113,9 @@ important claim for an auditor to check.
 
 **(ii) The residual is small.** Since (*) would be an exact hedge for the
 true diffusion, `P_h - C_h` retains only the discrepancy between the scheme
-and the exact dynamics. Empirically the residual standard deviation scales
-like `O(h)` for the order-one schemes, so `|b| / s.e.` is asymptotically
-**level-independent** and the deep ladder becomes reachable at the existing
+and the exact dynamics. The residual standard deviation is *observed* to scale like `O(h)` for the
+order-one schemes (this is measured, not established in general), so
+`|b| / s.e.` is empirically **level-independent** and the deep ladder becomes reachable at the existing
 path count.
 
 **Choice of `beta`.** A coefficient `beta` multiplying `C_h` leaves the
@@ -223,13 +228,24 @@ it is trying to exclude**, biasing the fitted slope; and fitting absolute
 values discards sign information that distinguishes a real bias from a noise
 excursion.
 
-The production fit is now an **inverse-variance-weighted fit of the signed
-bias** over *all* levels, with weight `(|b| / s.e.)^2` — the delta-method
-precision of `log|b|` — so a level near the noise floor is downweighted
-smoothly instead of being admitted or excluded by a threshold. The dominant
-sign is chosen by significance-weighted vote; levels of the minority sign are
-dropped. Residual misfit inflates the slope's standard error, so curvature
-widens the interval rather than being hidden.
+The production fit is **signed generalised least squares**: minimise
+
+    sum_k ( b_k - C h_k^alpha )^2 / s_k^2
+
+directly on the signed biases, with `C` profiled out analytically at each
+`alpha` (the model is linear in `C`), leaving a one-dimensional search. No
+logarithm, no absolute value, no data-dependent deletion of levels. The
+interval on `alpha` is the 95% profile region
+`{alpha : RSS(alpha) <= RSS_min + 3.841}`.
+
+An intermediate version fitted `log|b|` after choosing a dominant sign from
+the data and discarding minority-sign levels, weighting by `(|b|/s.e.)^2`.
+That was still a data-dependent selection, and near the noise floor `log|b|`
+is badly non-normal while the weights correlate with the response they
+weight — biasing the slope in precisely the regime the control variate
+exists to reach. A signed fit needs none of that machinery: a level whose
+bias is consistent with zero simply carries little weight and pulls the
+curve toward zero, which is the correct inference.
 
 The old policy is retained as `fitted_weak_order_legacy` so the rerun stays
 directly comparable with the numbers currently in the results chapter.
@@ -245,12 +261,20 @@ in regime E on `g3` with **0 of 5** levels resolved.
 
 ### Drift diagnostic
 
-Consecutive-level local slopes are reported, with `noise` and `sign-change`
-markers. A linear trend in the local slope is fitted and flagged as
-`order_drifting` when it exceeds both `0.03` per level and twice its own
-standard error. Motivation: the floored schemes below the boundary have local
-slopes that drift monotonically downward with refinement, so **no single
-power law describes them** and any quoted order is window-dependent.
+`order_drifting` is set when the signed GLS fits over the **coarse half** and
+the **fine half** of the ladder have disjoint 95% profile intervals. Because
+levels are independently seeded, fits on disjoint level sets are independent
+and their intervals may be compared directly.
+
+An earlier version regressed consecutive local slopes against level index.
+That is invalid: adjacent local slopes share an observation and are
+correlated, so the trend's standard error was understated, and omitting
+unresolved pairs silently compressed the spacing. Local slopes are still
+reported (with `noise` and `sign-change` markers) as a descriptive aid, but
+no longer carry the diagnostic.
+
+`fitted_order_fine_window` gives the same fit over a contiguous block at the
+fine end, declared by position rather than chosen after seeing the fit.
 
 ### Plotting
 
@@ -326,11 +350,17 @@ the level-independence predicted in §3(ii).
 
 2. **ProjEuler, regime E, `g1`**: local slope drifts monotonically downward —
    `0.40, 0.36, 0.32, 0.29, 0.27, 0.25, 0.23, 0.22, 0.20, 0.19` for
-   consecutive pairs through `k = 13` — with no sign of settling, plausibly
-   heading toward the `delta/2 = 0.125` Hefter–Jentzen ceiling. If so, the
-   published `0.32` is a property of the measurement window, not of the
-   scheme, and running deeper returns a *smaller* number rather than a more
-   accurate one.
+   consecutive pairs through `k = 13` — with no sign of settling. If that
+   holds, the published `0.32` is a property of the measurement window, not
+   of the scheme, and running deeper returns a *smaller* number rather than
+   a more accurate one.
+
+   An earlier draft connected this to the `delta/2 = 0.125` Hefter–Jentzen
+   ceiling. **That connection is withdrawn**: the HJ lower bound constrains
+   *strong* (pathwise `L^p`) approximation on uniform meshes and does not by
+   itself bound the weak convergence of `E[g_1]`. The observation is
+   empirically consistent with a boundary-driven fractional bias; it does
+   not have a theoretical target attached.
 
 ---
 
@@ -343,19 +373,19 @@ Ordered by how much a defect would cost.
    same increment. Is there any path through any scheme where the increment
    influences the step size or is redrawn?
 
-2. **`g4`'s trapezoidal term.** The measured `g4` bias contains the error of
-   the trapezoidal rule applied to `int X ds`, which is a property of the
-   *functional discretisation*, not of the SDE scheme. It is asserted to be
-   `O(h^2)` and therefore asymptotically subdominant, but this was **not
-   verified**. If it is `O(h)` instead, the `g4` column measures the
-   quadrature rule for every scheme and the near-1 orders there are an
-   artefact. This is the weakest verified claim in the change.
+2. **RESOLVED — `g4`'s trapezoidal term is `O(h^2)`.** Evaluated
+   deterministically by backward affine recursion on an exact CIR skeleton
+   (no Monte Carlo): local order `2.000` in every regime, and in regime E
+   the term falls from `1.93x10^-6` at `h = 2^-3` to `7.28x10^-12` at
+   `2^-12` — orders of magnitude below any bias the experiment reports. The
+   near-order-one `g4` results are therefore not a quadrature artefact.
+   Locked in by `test_g4_trapezoid_error_is_second_order`.
 
-3. **`g2` reference quadrature.** At `2^-12` the reported biases reach
-   `~10^-6`. The reference `E[g2]` is `scipy.integrate.quad` to `epsabs
-   1e-12` over a semi-infinite interval against an `ncx2` density with
-   `delta = 0.25`. Is that tolerance actually attained near the boundary
-   regimes, and is it comfortably below the smallest reported bias?
+3. **RESOLVED — `g2` reference is now closed-form.** `E[g2]` uses the
+   truncated-moment expression `c^-2 G(delta, lambda; cK)` rather than
+   semi-infinite quadrature; the two agree to `<1e-15` in every regime and
+   the quadrature is retained as a test oracle. The tolerance question is
+   moot.
 
 4. **Pre-asymptotic curvature vs true fractional order.** FTE's local slopes
    are non-monotone at coarse `h` (`1.81, 1.29, 0.85, 0.91, 0.92, 1.11, ...`).
@@ -363,7 +393,9 @@ Ordered by how much a defect would cost.
    headline number come from a fine-end window only? The stability columns
    (`order_stability_spread`, leave-one-end-out) are meant to expose this.
 
-5. **Drift thresholds.** `0.03` per level and `2 x s.e.` are heuristic.
+5. **Window choice.** The fine window is the finest 5 levels and the drift
+   test splits the ladder in half — both declared by position, but still
+   arbitrary. Does the conclusion survive other splits?
 
 6. **`beta = 1` for schemes far from exact dynamics.** ProjEuler gets only
    3–17x variance reduction at coarse `h`, presumably because its floor makes
@@ -400,3 +432,78 @@ Output columns added to `results/weak_error.csv`: `estimator`,
 `variance_reduction`, `batch_standard_error_cv`, `steps_per_path`,
 `backstop_fraction`. The direct-estimator columns are unchanged and still
 written, so the rerun remains comparable with the published results.
+
+
+---
+
+## 12. Revision 2: what the audit changed
+
+An external audit of revision 1 returned the following. Items marked
+**fixed** are in the code; items marked **noted** are recorded judgements.
+
+**Blocking defect (fixed).** The adaptive `g2` derivative lookup built an
+`(n_active, 384)` array and Python-looped `np.interp` over active paths on
+every adaptive round — measured at 3.0 s and 613 MB per round at 200,000
+paths. KLM in regime E at `k = 10` runs tens of thousands of rounds, so the
+production run would not have finished. Replaced with vectorised bilinear
+interpolation from four indexed entries per path: 50 ms per round, 60x
+faster, `O(n_active)` storage.
+
+**The rate fit was not what revision 1 described (fixed).** See §7.
+
+**Correlated drift statistic (fixed).** See §7.
+
+**Plot joined across unresolved gaps (fixed).** All resolved levels were
+drawn as a single line, so a segment was drawn straight across any
+unresolved gap — reintroducing exactly the spurious convergence the
+upper-bound policy exists to prevent. Now each contiguous run of resolved
+levels is its own line, with 95% error bars and per-scheme noise floors
+(which differ by orders of magnitude between schemes once the control
+variate is applied, so a single pooled floor was misleading). Order-1 and
+order-1/2 guides are both drawn.
+
+**Resume could merge incompatible partials (fixed).** A configuration hash
+over paths, ladder, schemes, control setting, seed and `T` is written
+alongside the partial CSV and checked before any resume; a mismatch aborts
+with a diff rather than silently combining runs.
+
+**Seed stream depended on scheme selection (fixed).** The free-running
+adaptive schemes drew from one shared per-level generator in sequence, so
+adaptive KL's stream depended on whether KLM had run first — meaning
+`--schemes KL` and `--schemes KLM KL` gave different KL numbers from the
+same seed. Streams are now keyed by `(regime, scheme, level)`.
+
+**Runtime estimate was wrong (corrected).** Revision 1 said 5–8 h. That
+probe was run with `--max-adaptive-steps 0`, which disabled the adaptive
+schemes entirely, and the adaptive cost was then extrapolated from a
+control-free timing. Measured properly: ~3 h fixed-step plus ~4 h adaptive,
+so ~7 h on a desktop CPU and plausibly beyond Kaggle's 12 h cap on slower
+hardware. The run should be split by regime across two sessions.
+
+**`delta/2` ceiling claim withdrawn (corrected).** See §9.
+
+**Overstated "exact" intervals (corrected).** See §3.
+
+**Noted — level coupling.** The audit suggests coupling the fixed-step
+levels via nested Brownian increments while leaving the adaptive schemes
+free, observing correctly that the adaptive argument does not force
+independence on the fixed-step schemes. Not adopted, for two reasons.
+First, independent levels are what make the checkpoint/resume bit-identical
+to an uninterrupted run, which is what allows the run to be split across
+Kaggle sessions at all. Second, they make the coarse-half/fine-half drift
+test statistically clean, since disjoint level sets are then independent.
+With the control variate delivering `|b| / s.e. ~ 20` at every level, the
+marginal value of coupling for slope precision is small. This is a genuine
+trade rather than an oversight, and it is reversible.
+
+**Noted — figure layout.** The audit reports that the code produces one
+four-panel figure per regime "not the requested four figures organised by
+`g1..g4`". No such layout was ever specified; the existing thesis figure
+(`figures/results/weak_error_regime_E.pdf`) is one 2x2 panel per regime and
+that convention is retained.
+
+**Noted — the P100.** The audit lists "P100 will accelerate this
+implementation" as a claim to be rejected. It is not a claim made here: the
+notebook sets the accelerator to None and states that no GPU is needed. The
+question of whether a JAX port would be worth it is open, but it is not
+required for this run.

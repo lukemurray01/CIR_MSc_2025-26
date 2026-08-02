@@ -220,10 +220,34 @@ class G2Table:
         w = ((lt - lo) / (hi - lo))[:, None]
         return (1.0 - w) * self.table[idx] + w * self.table[idx + 1]
 
+    def interpolate(self, tau, x):
+        """d_x u2 at per-path (tau, x) pairs, vectorised.
+
+        Bilinear from four indexed table entries per path, so storage is
+        O(len(x)) rather than O(len(x) * n_x).  The adaptive schemes need
+        this: they present a different tau for every active path on every
+        round, and materialising a full table row per path allocated
+        ~600 MB and took ~3 s per round at 200k paths.
+        """
+        tau = np.asarray(tau, dtype=float)
+        x = np.asarray(x, dtype=float)
+
+        lt = np.log(np.clip(tau, self.tau[0], self.tau[-1]))
+        i = np.clip(np.searchsorted(self.log_tau, lt) - 1, 0, len(self.tau) - 2)
+        wt = (lt - self.log_tau[i]) / (self.log_tau[i + 1] - self.log_tau[i])
+
+        xc = np.clip(x, self.x[0], self.x[-1])
+        j = np.clip(np.searchsorted(self.x, xc) - 1, 0, len(self.x) - 2)
+        wx = (xc - self.x[j]) / (self.x[j + 1] - self.x[j])
+
+        lo = (1.0 - wx) * self.table[i, j] + wx * self.table[i, j + 1]
+        hi = (1.0 - wx) * self.table[i + 1, j] + wx * self.table[i + 1, j + 1]
+        return (1.0 - wt) * lo + wt * hi
+
     def __call__(self, tau, x):
         """d_x u2(tau, x) for scalar tau and array x."""
-        row = self.rows_for_grid(np.atleast_1d(tau))[0]
-        return np.interp(x, self.x, row)
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        return self.interpolate(np.full(x.shape, float(tau)), x)
 
 
 # ------------------------------------------------------------ assembly -----

@@ -43,6 +43,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import argparse
 import csv
+import hashlib
+import json
 import time
 
 import matplotlib.pyplot as plt
@@ -148,10 +150,32 @@ def get_args():
 
 
 PARTIAL_CSV = "weak_error_partial.csv"
+RUN_CONFIG_JSON = "weak_error_run_config_hash.json"
 
 
 class TimeBudgetExceeded(Exception):
     """Raised to unwind cleanly when --time-budget-s is hit."""
+
+
+def run_config_hash(args, n_paths, master_seed, T):
+    """Identity of everything that changes the numbers in a level.
+
+    Resume merges rows from a previous process. Without this gate a partial
+    file written at 20,000 paths, a different ladder, or with the control
+    variate disabled would be silently combined with the current run.
+    """
+    payload = {
+        "n_paths": n_paths,
+        "n_steps": sorted(args.n_steps),
+        "schemes": sorted(args.schemes),
+        "max_adaptive_steps": args.max_adaptive_steps,
+        "control_variate": not args.no_control_variate,
+        "master_seed": master_seed,
+        "T": T,
+        "batch_size": args.batch_size,
+    }
+    blob = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16], payload
 
 
 def _out_path(args, filename):
@@ -162,15 +186,35 @@ def _out_path(args, filename):
     return results_path(filename)
 
 
-def load_partial(args, force=False):
+def load_partial(args, config_hash=None, force=False):
     """Rows already computed, as (list_of_rows, {regime: {n_steps}}).
 
     `force` reads the partial file regardless of --resume; used after a
     time-budget stop, where the partial file is the run's only output.
+    When `config_hash` is given, a partial written under a different
+    configuration is refused rather than silently merged.
     """
     path = _out_path(args, PARTIAL_CSV)
     if (not args.resume and not force) or not Path(path).exists():
         return [], {}
+
+    if config_hash is not None:
+        stamp = _out_path(args, RUN_CONFIG_JSON)
+        if not Path(stamp).exists():
+            raise SystemExit(
+                f"{PARTIAL_CSV} exists but {RUN_CONFIG_JSON} does not, so the "
+                "partial cannot be shown to match this configuration. Delete "
+                "the partial to start fresh."
+            )
+        previous = json.loads(Path(stamp).read_text(encoding="utf-8"))
+        if previous.get("hash") != config_hash:
+            raise SystemExit(
+                "Refusing to resume: the partial results were produced under "
+                "a different configuration.\n"
+                f"  partial: {previous.get('config')}\n"
+                f"  current: {run_config_hash(args, args._n_paths, args._seed, args._T)[1]}\n"
+                "Delete the partial to start fresh, or match the settings."
+            )
 
     numeric = {
         "dt", "approx_mean", "exact_value", "signed_error", "weak_error",
@@ -212,16 +256,11 @@ def adaptive_dxu_fns(params, T, g2_table):
     """
     kappa, theta, sigma = params["kappa"], params["theta"], params["sigma"]
 
-    def _g2(tau, x):
-        # Two 1-D lookups per round rather than one per level: the adaptive
-        # taus are heterogeneous, so the table is sampled pointwise.
-        rows = g2_table.rows_for_grid(tau)
-        return np.array([np.interp(xi, g2_table.x, row)
-                         for xi, row in zip(np.atleast_1d(x), rows)])
-
     return {
         "g1": lambda tau, x: np.full_like(x, 0.0) + dxu_g1(tau, kappa),
-        "g2": _g2,
+        # Vectorised bilinear lookup: an adaptive round presents a distinct
+        # tau per active path, so this must stay O(n_active) in storage.
+        "g2": g2_table.interpolate,
         "g3": lambda tau, x: dxu_g3(tau, x, kappa, theta, sigma),
     }
 
@@ -342,6 +381,19 @@ def run_regime(regime_name, params, args, master_seed, n_paths,
         level_rows = []
         dt = T / n_steps
         rng = make_rng(master_seed + 7919 * level)
+
+        def scheme_rng(tag, _regime=regime_name, _level=level):
+            """Independent stream keyed by (regime, scheme, level).
+
+            The free-running schemes previously drew from the shared `rng`
+            in sequence, so the adaptive KL stream depended on whether KLM
+            had run before it -- meaning `--schemes KL` and
+            `--schemes KLM KL` produced different KL numbers from the same
+            seed. Keying the stream removes that coupling.
+            """
+            key = f"{_regime}|{tag}|{_level}".encode("utf-8")
+            offset = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
+            return make_rng(master_seed + offset)
         batch_size = batch_size_for(args.batch_size, n_steps)
 
         g2_rows = None
@@ -438,7 +490,7 @@ def run_regime(regime_name, params, args, master_seed, n_paths,
                 terminal, klm_stats = klm_backstop_terminal(
                     X0=params["x0"], kappa=params["kappa"],
                     theta=params["theta"], sigma=params["sigma"], T=T,
-                    h_max=dt, n_paths=n_paths, rng=rng,
+                    h_max=dt, n_paths=n_paths, rng=scheme_rng("KLM"),
                     dxu_fns=dxu_fns, controls_out=controls,
                 )
                 _adaptive_rows("KLM", klm_stats["backstop_kind"], terminal,
@@ -452,7 +504,7 @@ def run_regime(regime_name, params, args, master_seed, n_paths,
                 terminal = kl_adaptive_terminal(
                     X0=params["x0"], kappa=params["kappa"],
                     theta=params["theta"], sigma=params["sigma"], T=T,
-                    dt_max=dt, n_paths=n_paths, rng=rng,
+                    dt_max=dt, n_paths=n_paths, rng=scheme_rng("KL-adaptive"),
                     dxu_fns=dxu_fns, controls_out=controls,
                 )
                 _adaptive_rows("KL", "adaptive-soft-zero", terminal, controls,
@@ -530,67 +582,78 @@ def production_estimate(row):
     return row["signed_error"], row["mc_standard_error"]
 
 
-def _weighted_power_fit(h, b, se):
-    """Inverse-variance weighted fit of b(h) = C h^alpha, on SIGNED biases.
+ALPHA_GRID = np.linspace(-1.0, 3.0, 4001)
 
-    Returns (alpha, s.e.(alpha), n_used).  Points are used when they share
-    the dominant sign; the weight of a point is (|b| / s.e.)^2, the
-    delta-method precision of log|b|, so a level near the noise floor is
-    downweighted smoothly instead of being admitted or excluded by a
-    threshold.  Thresholding then fitting -- the previous policy -- selects
-    on the noise it is trying to avoid and biases the fitted slope.
+# Minimum coarse-to-fine change in the fitted order before drift is flagged.
+# Below this the order is window-dependent only in a sense too small to
+# change what gets reported.
+DRIFT_MIN_GAP = 0.05
+
+
+def _signed_power_fit(h, b, se):
+    """Signed generalised least squares fit of b(h) = C h^alpha.
+
+    Minimises sum_k (b_k - C h_k^alpha)^2 / s_k^2 directly on the SIGNED
+    biases: no logarithm, no absolute value, and no data-dependent deletion
+    of levels.  C is profiled out analytically at each alpha (the model is
+    linear in C), leaving a one-dimensional search.
+
+    This replaces an earlier log-space fit that picked a dominant sign from
+    the data, discarded minority-sign levels, and weighted by
+    (|b| / s.e.)^2.  Near the noise floor log|b| is badly non-normal, the
+    weights are correlated with the response they weight, and the sign
+    deletion is a data-dependent selection -- all of which bias the slope in
+    exactly the regime the control variate exists to reach.  A signed fit
+    needs none of it: a level whose bias is consistent with zero simply
+    carries little weight and pulls the curve toward zero, which is the
+    correct inference.
+
+    Returns (alpha, lo, hi, C, reduced_chi2, n_used) with (lo, hi) the 95%
+    profile interval, i.e. {alpha : RSS(alpha) <= RSS_min + 3.841}.
     """
-    h, b, se = np.asarray(h), np.asarray(b), np.asarray(se)
-    finite = np.isfinite(b) & np.isfinite(se) & (se > 0) & (b != 0.0)
-    if finite.sum() < 3:
-        return np.nan, np.nan, int(finite.sum())
+    h, b, se = np.asarray(h, float), np.asarray(b, float), np.asarray(se, float)
+    ok = np.isfinite(b) & np.isfinite(se) & (se > 0)
+    if ok.sum() < 3:
+        return (np.nan,) * 5 + (int(ok.sum()),)
 
-    h, b, se = h[finite], b[finite], se[finite]
+    h, b, se = h[ok], b[ok], se[ok]
+    w = 1.0 / se**2
 
-    # Dominant sign: weight each level by its own significance so that
-    # noise-dominated sign flips do not decide it.
-    signal = np.abs(b) / se
-    sign = np.sign(np.sum(np.sign(b) * signal))
-    keep = np.sign(b) == sign
-    if keep.sum() < 3:
-        return np.nan, np.nan, int(keep.sum())
+    # Profile: for each alpha, C_hat = sum(w b f) / sum(w f^2), f = h^alpha.
+    f = h[None, :] ** ALPHA_GRID[:, None]
+    denom = (w * f * f).sum(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        C = np.where(denom > 0, (w * b * f).sum(axis=1) / denom, np.nan)
+    rss = (w * (b[None, :] - C[:, None] * f) ** 2).sum(axis=1)
 
-    h, b, se = h[keep], b[keep], se[keep]
-    y, x = np.log(np.abs(b)), np.log(h)
-    w = (np.abs(b) / se) ** 2
+    if not np.any(np.isfinite(rss)):
+        return (np.nan,) * 5 + (int(len(h)),)
 
-    sw = w.sum()
-    xbar, ybar = (w * x).sum() / sw, (w * y).sum() / sw
-    sxx = (w * (x - xbar) ** 2).sum()
-    if sxx <= 0:
-        return np.nan, np.nan, int(len(h))
-    alpha = (w * (x - xbar) * (y - ybar)).sum() / sxx
+    best = int(np.nanargmin(rss))
+    alpha, rss_min = float(ALPHA_GRID[best]), float(rss[best])
 
-    resid = y - (ybar + alpha * (x - xbar))
-    dof = len(h) - 2
-    if dof > 0:
-        # Scale the nominal slope error by the observed misfit, so that
-        # curvature (a misspecified power law) widens the interval.
-        chi2 = (w * resid**2).sum() / dof
-        se_alpha = float(np.sqrt(max(chi2, 1.0) / sxx))
-    else:
-        se_alpha = float(np.sqrt(1.0 / sxx))
+    within = np.isfinite(rss) & (rss <= rss_min + 3.841)
+    lo = float(ALPHA_GRID[within].min()) if within.any() else np.nan
+    hi = float(ALPHA_GRID[within].max()) if within.any() else np.nan
 
-    return float(alpha), se_alpha, int(len(h))
+    dof = max(len(h) - 2, 1)
+    return alpha, lo, hi, float(C[best]), rss_min / dof, int(len(h))
 
 
 def fit_orders(rows):
-    """Signed weighted power-law fit, local slopes, and a drift diagnostic.
+    """Signed GLS power-law fit, a fine window, and a drift diagnostic.
 
-    Three columns matter downstream:
+    Columns that matter downstream:
 
-      fitted_weak_order        signed weighted fit over all levels (production)
-      fitted_weak_order_legacy old policy: |error| fit over points >= 2 s.e.
-      local_slope_trend        drift of the local slope per halving of h
+      fitted_weak_order          signed GLS over all levels (production)
+      fitted_weak_order_lo/hi    95% profile interval
+      fitted_order_fine_window   same fit over the finest levels only
+      order_drifting             coarse and fine halves disagree at 95%
+      fitted_weak_order_legacy   old policy: |error| fit over points >= 2 s.e.
 
-    A monotonically drifting local slope means no single alpha describes the
-    data: the floored schemes below the Feller boundary behave this way, and
-    quoting one number for them is an artefact of the window measured.
+    When order_drifting is set, no single alpha describes the ladder and the
+    fitted number is a property of the window measured, not of the scheme.
+    Report finite-window slopes for those series instead.
     """
     order_rows = []
     keys = sorted({(r["regime"], r["scheme"], r["payoff"]) for r in rows})
@@ -601,19 +664,49 @@ def fit_orders(rows):
              and r["payoff"] == payoff),
             key=lambda r: r["dt"],
         )
+        # pts are sorted by dt ascending, i.e. finest level first.
         est = [production_estimate(r) for r in pts]
         h = np.array([r["dt"] for r in pts])
         b = np.array([e[0] for e in est])
         se = np.array([e[1] for e in est])
 
-        alpha, se_alpha, n_used = _weighted_power_fit(h, b, se)
+        alpha, alpha_lo, alpha_hi, _C, chi2, n_used = _signed_power_fit(h, b, se)
 
-        # Stability under dropping the coarsest / the finest level.
-        alpha_drop_coarse, _, _ = _weighted_power_fit(h[:-1], b[:-1], se[:-1])
-        alpha_drop_fine, _, _ = _weighted_power_fit(h[1:], b[1:], se[1:])
-        spread = np.nanmax(np.abs([alpha_drop_coarse - alpha,
-                                   alpha_drop_fine - alpha])) \
-            if np.isfinite(alpha) else np.nan
+        # Fine-window fit: a contiguous block at the fine end, declared by
+        # position rather than chosen by looking at the fit.
+        n_win = min(5, len(h))
+        alpha_fine, fine_lo, fine_hi, _, _, _ = _signed_power_fit(
+            h[:n_win], b[:n_win], se[:n_win])
+
+        # Drift: compare disjoint coarse and fine halves.  Levels are
+        # independently seeded, so fits on disjoint level sets are
+        # independent and their intervals can be compared directly --
+        # unlike consecutive local slopes, which share an observation each
+        # and cannot be regressed as if independent.
+        half = len(h) // 2
+        alpha_coarse, coarse_lo, coarse_hi = np.nan, np.nan, np.nan
+        if half >= 3:
+            alpha_fine_h, fh_lo, fh_hi, _, _, _ = _signed_power_fit(
+                h[:half], b[:half], se[:half])
+            alpha_coarse, coarse_lo, coarse_hi, _, _, _ = _signed_power_fit(
+                h[half:], b[half:], se[half:])
+            drift_gap = alpha_fine_h - alpha_coarse
+            # Disjoint 95% profile intervals => window-dependent order.  The
+            # magnitude floor matters as much as the significance test: with
+            # variance reduction of 10^5 the intervals become so tight that
+            # ~1% curvature is formally significant, which would flag clean
+            # order-one schemes (uniform KL in regime A fits 0.989 with a
+            # profile interval of width 0.01).  Drift is only interesting
+            # when it would change the order actually reported.
+            separated = bool(
+                np.isfinite(fh_lo) and np.isfinite(coarse_hi)
+                and (fh_lo > coarse_hi or coarse_lo > fh_hi)
+            )
+            drifting = bool(separated and abs(drift_gap) >= DRIFT_MIN_GAP)
+        else:
+            drift_gap, drifting = np.nan, False
+
+        spread = abs(alpha_fine - alpha) if np.isfinite(alpha_fine) and np.isfinite(alpha) else np.nan
 
         # Local slopes on signed biases, fine-to-coarse as before.
         local, local_vals = [], []
@@ -629,21 +722,6 @@ def fit_orders(rows):
                 slope = np.log(abs(b_hi / b_lo)) / np.log(hi["dt"] / lo["dt"])
                 local.append(f"{slope:.2f}")
                 local_vals.append(slope)
-
-        # Trend in the local slope, per halving of h.  Flagged only when it
-        # is large against its own scatter: with few coarse levels the local
-        # slopes are noisy enough to fake a trend.
-        trend, trend_se = np.nan, np.nan
-        if len(local_vals) >= 4:
-            idx = np.arange(len(local_vals), dtype=float)
-            vals = np.asarray(local_vals)
-            trend, intercept = np.polyfit(idx, vals, 1)
-            resid = vals - (trend * idx + intercept)
-            dof = len(vals) - 2
-            sxx = ((idx - idx.mean()) ** 2).sum()
-            if dof > 0 and sxx > 0:
-                trend_se = float(np.sqrt((resid**2).sum() / dof / sxx))
-            trend = float(trend)
 
         # Legacy policy, retained so the rerun stays comparable with the
         # numbers currently quoted in the results chapter.
@@ -664,22 +742,24 @@ def fit_orders(rows):
         # floor -- without the old policy's select-then-fit bias.
         resolved_cv = int(np.sum(np.abs(b) >= 2 * se))
         if resolved_cv < 3:
-            alpha, se_alpha, spread = np.nan, np.nan, np.nan
-
-        drifting = bool(
-            np.isfinite(trend) and np.isfinite(trend_se)
-            and abs(trend) > 0.03 and abs(trend) > 2.0 * trend_se
-        )
+            alpha = alpha_lo = alpha_hi = spread = np.nan
+            alpha_fine = fine_lo = fine_hi = np.nan
 
         order_rows.append({
             "regime": regime,
             "scheme": scheme,
             "payoff": payoff,
             "fitted_weak_order": alpha,
-            "fitted_weak_order_se": se_alpha,
+            "fitted_weak_order_lo": alpha_lo,
+            "fitted_weak_order_hi": alpha_hi,
+            "reduced_chi2": chi2,
+            "fitted_order_fine_window": alpha_fine,
+            "fine_window_lo": fine_lo,
+            "fine_window_hi": fine_hi,
+            "fine_window_levels": n_win,
             "order_stability_spread": float(spread) if np.isfinite(spread) else np.nan,
-            "local_slope_trend": trend,
-            "local_slope_trend_se": trend_se,
+            "order_coarse_half": alpha_coarse,
+            "order_drift_gap": drift_gap,
             "order_drifting": drifting,
             "n_points_used": n_used,
             "n_points_resolved": resolved_cv,
@@ -731,26 +811,52 @@ def plot_regime(regime_name, rows, args, n_paths, out_path):
             err = np.maximum(err, 1e-18)
 
             style = SCHEME_STYLES[name]
-            ax.loglog(dt[resolved], err[resolved], lw=1.1, ms=5,
-                      label=SCHEME_LABELS[name], **style)
+            # Draw each CONTIGUOUS run of resolved levels as its own line.
+            # Plotting all resolved points as one series draws a segment
+            # straight across any unresolved gap, which is exactly the
+            # spurious convergence the upper-bound policy exists to avoid.
+            first = True
+            start = None
+            for idx in range(len(dt) + 1):
+                inside = idx < len(dt) and resolved[idx]
+                if inside and start is None:
+                    start = idx
+                elif not inside and start is not None:
+                    sl = slice(start, idx)
+                    ax.errorbar(
+                        dt[sl], err[sl], yerr=1.96 * se[sl],
+                        lw=1.1, ms=5, capsize=2, elinewidth=0.7,
+                        label=SCHEME_LABELS[name] if first else None,
+                        color=style["color"], marker=style["marker"],
+                    )
+                    first = False
+                    start = None
+            if first:
+                # Nothing resolved anywhere: keep the scheme in the legend.
+                ax.plot([], [], label=SCHEME_LABELS[name], color=style["color"],
+                        marker=style["marker"], lw=1.1, ms=5)
             if np.any(~resolved):
                 ax.loglog(
                     dt[~resolved], err[~resolved], linestyle="none",
                     marker="v", ms=7, mfc="none", mec=style["color"], mew=1.0,
                 )
-            for r, s in zip(pts, se):
-                noise_floor[r["dt"]] = max(noise_floor.get(r["dt"], 0.0), 2.0 * s)
+            noise_floor[name] = (dt, 2.0 * se, style["color"])
 
         if noise_floor:
-            dts = np.array(sorted(noise_floor))
-            ax.loglog(
-                dts, [noise_floor[d] for d in dts], "--", color="0.55",
-                lw=1.0, label=r"$2\times$ MC s.e.",
-            )
-            # Slope-one guide anchored at the coarsest level.
+            # Per-scheme noise floors: with the control variate these differ
+            # by orders of magnitude between schemes, so a single maximum
+            # would hide the floor that actually applies to each curve.
+            for name, (dts_s, floor, colour) in noise_floor.items():
+                ax.loglog(dts_s, floor, ":", color=colour, lw=0.7, alpha=0.55)
+            ax.plot([], [], ":", color="0.4", lw=0.7,
+                    label=r"$2\times$ s.e. (per scheme)")
+
+            dts = np.array(sorted({d for v in noise_floor.values() for d in v[0]}))
             err_max = max(abs(production_estimate(r)[0]) for r in payoff_rows)
-            ax.loglog(dts, err_max * (dts / dts[-1]), "k:", lw=0.8,
-                      label="slope 1")
+            for power, style_ in ((1.0, "k:"), (0.5, "k--")):
+                ax.loglog(dts, err_max * (dts / dts[-1]) ** power, style_,
+                          lw=0.8, alpha=0.7,
+                          label=f"slope {power:g}")
 
         ax.set_xlabel("step size h")
         ax.set_ylabel(f"|weak error|, {payoff}")
@@ -797,7 +903,16 @@ def main():
     )
 
     started = time.perf_counter()
-    all_rows, done = load_partial(args)
+
+    config_hash, config_payload = run_config_hash(args, n_paths, master_seed, T)
+    args._n_paths, args._seed, args._T = n_paths, master_seed, T
+    print(f"config hash   : {config_hash}", flush=True)
+
+    all_rows, done = load_partial(args, config_hash=config_hash)
+    _out_path(args, RUN_CONFIG_JSON).write_text(
+        json.dumps({"hash": config_hash, "config": config_payload}, indent=2),
+        encoding="utf-8",
+    )
     if all_rows:
         have = ", ".join(f"{r}:{len(v)}" for r, v in sorted(done.items()))
         print(f"resuming; {len(all_rows)} rows already complete ({have})",
@@ -853,11 +968,14 @@ def main():
 
     for r in order_rows:
         if np.isfinite(r["fitted_weak_order"]):
-            fitted = f"{r['fitted_weak_order']:.3f} +/- {r['fitted_weak_order_se']:.3f}"
+            fitted = (f"{r['fitted_weak_order']:.3f} "
+                      f"[{r['fitted_weak_order_lo']:.3f},{r['fitted_weak_order_hi']:.3f}]")
             if r["order_drifting"]:
-                fitted += f"  [DRIFTING {r['local_slope_trend']:+.3f}/level]"
+                fitted += f"  DRIFTING (fine-coarse {r['order_drift_gap']:+.2f})"
+            if np.isfinite(r["fitted_order_fine_window"]):
+                fitted += f"  fine={r['fitted_order_fine_window']:.3f}"
         else:
-            fitted = "refused (no resolved levels)"
+            fitted = "refused (fewer than 3 resolved levels)"
         print(
             f"  {r['regime']} {r['scheme']:<10} {r['payoff']}: order {fitted} "
             f"({r['n_points_resolved']}/{r['n_points_total']} resolved; "
