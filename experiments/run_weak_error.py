@@ -630,12 +630,20 @@ def fit_orders(rows):
                 local.append(f"{slope:.2f}")
                 local_vals.append(slope)
 
-        # Trend in the local slope: fitted per level (per halving of h).
+        # Trend in the local slope, per halving of h.  Flagged only when it
+        # is large against its own scatter: with few coarse levels the local
+        # slopes are noisy enough to fake a trend.
+        trend, trend_se = np.nan, np.nan
         if len(local_vals) >= 4:
             idx = np.arange(len(local_vals), dtype=float)
-            trend = float(np.polyfit(idx, np.asarray(local_vals), 1)[0])
-        else:
-            trend = np.nan
+            vals = np.asarray(local_vals)
+            trend, intercept = np.polyfit(idx, vals, 1)
+            resid = vals - (trend * idx + intercept)
+            dof = len(vals) - 2
+            sxx = ((idx - idx.mean()) ** 2).sum()
+            if dof > 0 and sxx > 0:
+                trend_se = float(np.sqrt((resid**2).sum() / dof / sxx))
+            trend = float(trend)
 
         # Legacy policy, retained so the rerun stays comparable with the
         # numbers currently quoted in the results chapter.
@@ -648,7 +656,21 @@ def fit_orders(rows):
             if len(usable) >= 3 else np.nan
         )
 
+        # Refuse to quote an order when too few levels carry a bias that is
+        # distinguishable from zero.  Note what this gates and what it does
+        # NOT: the fit itself still uses every level, weighted by precision.
+        # Only the decision to REPORT a number depends on resolution, so a
+        # refusal keeps its old meaning -- the bias sits below the noise
+        # floor -- without the old policy's select-then-fit bias.
         resolved_cv = int(np.sum(np.abs(b) >= 2 * se))
+        if resolved_cv < 3:
+            alpha, se_alpha, spread = np.nan, np.nan, np.nan
+
+        drifting = bool(
+            np.isfinite(trend) and np.isfinite(trend_se)
+            and abs(trend) > 0.03 and abs(trend) > 2.0 * trend_se
+        )
+
         order_rows.append({
             "regime": regime,
             "scheme": scheme,
@@ -657,7 +679,8 @@ def fit_orders(rows):
             "fitted_weak_order_se": se_alpha,
             "order_stability_spread": float(spread) if np.isfinite(spread) else np.nan,
             "local_slope_trend": trend,
-            "order_drifting": bool(np.isfinite(trend) and abs(trend) > 0.03),
+            "local_slope_trend_se": trend_se,
+            "order_drifting": drifting,
             "n_points_used": n_used,
             "n_points_resolved": resolved_cv,
             "n_points_total": len(pts),
