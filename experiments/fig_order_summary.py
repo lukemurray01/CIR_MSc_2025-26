@@ -42,7 +42,12 @@ SCHEME_STYLES = {
     "ProjEuler": dict(color="#AA3377", marker="^", label="Projected Euler"),
     "KL": dict(color="#EE6677", marker="d", label="Kelly–Lord splitting"),
     "KLM": dict(color="#7B1FA2", marker="v", label="KLM backstopped adaptive"),
-    "BLT": dict(color="#CC6677", marker="s", label="Bessel–Lie–Trotter splitting"),
+    # Green, not style.py's BLT rose (#CC6677), which is nearly identical to
+    # KL's salmon (#EE6677) and illegible beside it. This matches the figure
+    # already in the thesis. It reuses METHOD_COLOURS["HH"]; safe here only
+    # because HH is the reference in these figures and is never plotted as a
+    # scheme -- do not copy this choice into a plot that shows HH.
+    "BLT": dict(color="#228833", marker="s", label="Bessel–Lie–Trotter splitting"),
 }
 
 
@@ -184,15 +189,18 @@ def main():
     ax.set_ylabel(r"fitted strong $L^2$ order (tail fit)")
     ax.set_ylim(-0.35, 1.55)
     if sensitivity_ranges:
+        # Two lines: as one line this overflows the 7.2in canvas and is
+        # clipped on the right once the PDF is embedded in the thesis.
         fig.text(
             0.01,
-            0.005,
+            0.012,
             "Shaded bars: fitted-order span across HH references 4096-32768 "
-            "(reference-sensitivity gate). Uniform-mesh points above the "
-            r"$\delta/2$ band are reference-limited coupled diagnostics, "
-            "not true rates.",
+            "(reference-sensitivity gate).\n"
+            r"Uniform-mesh points above the $\delta/2$ band are "
+            "reference-limited coupled diagnostics, not true rates.",
             fontsize=6.5,
             color="0.35",
+            linespacing=1.5,
         )
     ax.set_title(
         "Observed strong convergence order across the regime grid"
@@ -200,7 +208,9 @@ def main():
     ax.legend(fontsize=8, loc="lower right")
     ax.grid(True, which="major", axis="y", alpha=0.25)
 
-    fig.tight_layout()
+    # reserve the bottom strip for the fig.text footnote, which tight_layout
+    # does not measure
+    fig.tight_layout(rect=(0, 0.075 if sensitivity_ranges else 0, 1, 1))
     pdf_path = figure_path("fig_order_vs_delta_summary.pdf")
     fig.savefig(pdf_path)
     fig.savefig(figure_path("fig_order_vs_delta_summary.png"), dpi=150)
