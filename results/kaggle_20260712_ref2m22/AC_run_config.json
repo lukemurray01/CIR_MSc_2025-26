@@ -1,0 +1,50 @@
+{
+  "run_mode": "full",
+  "n_paths": 20000,
+  "reference": "HH",
+  "reference_power": 22,
+  "reference_n_steps": 4194304,
+  "reference_dt": 2.384185791015625e-07,
+  "coarse_n_steps": [
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+  ],
+  "regimes": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E"
+  ],
+  "path_batch_size": 512,
+  "chunk_steps": 16384,
+  "schemes": [
+    "FTE",
+    "ProjEuler",
+    "KL",
+    "KLM"
+  ],
+  "resume": true,
+  "checkpoint_every_batches": 1,
+  "backup_every_blocks": 1,
+  "batch_contribution_csv": "/kaggle/working/cir_benchmark_suite_jax_outputs/results/jax_strong_error_batch_contributions.csv",
+  "partial_diagnostics_csv": "/kaggle/working/cir_benchmark_suite_jax_outputs/results/jax_strong_error_partial.csv",
+  "fig3_config": {
+    "n_paths": 1000,
+    "reference_power": 16,
+    "n_paper_a_values": 40,
+    "levels": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ]
+  },
+  "run_config_hash": "f1a1377ad11a430f"
+}

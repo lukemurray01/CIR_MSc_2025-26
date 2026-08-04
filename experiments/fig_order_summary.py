@@ -33,11 +33,16 @@ from src.utils.io import config_path, figure_path, results_path
 
 REGIMES = ["E", "D", "C", "B", "A"]  # ascending delta
 
+# Colours mirror src/utils/style.py (METHOD_COLOURS), which is authoritative.
+# BLT was added when the 2026-07-12 provenance merge put its rows into the
+# per-regime CSVs; before that this script produced a four-scheme figure while
+# the thesis carried a five-scheme variant generated outside the repo.
 SCHEME_STYLES = {
     "FTE": dict(color="#4477AA", marker="o", label="Full truncation Euler"),
     "ProjEuler": dict(color="#AA3377", marker="^", label="Projected Euler"),
     "KL": dict(color="#EE6677", marker="d", label="Kelly–Lord splitting"),
     "KLM": dict(color="#7B1FA2", marker="v", label="KLM backstopped adaptive"),
+    "BLT": dict(color="#CC6677", marker="s", label="Bessel–Lie–Trotter splitting"),
 }
 
 
