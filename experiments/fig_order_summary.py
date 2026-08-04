@@ -66,9 +66,13 @@ def read_regime_csv(regime_name):
         return list(csv.DictReader(f))
 
 
+# Read the ladder's per-rung ERROR rows, not its pre-fitted orders table: the
+# error rows carry the experiment signature and the raw (dt, l2) per reference
+# rung, so validation and fitting happen in one place. The orders table has no
+# signature columns and cannot be checked.
 SENSITIVITY_SOURCES = (
-    Path("outputs/reference_sensitivity/strong_reference_sensitivity_orders.csv"),
-    Path("results/reference_sensitivity/strong_reference_sensitivity_orders.csv"),
+    Path("results/reference_sensitivity/jax_strong_error_all_references.csv"),
+    Path("outputs/reference_sensitivity/jax_strong_error_all_references.csv"),
 )
 
 SIGNATURE_FIELDS = ("coarse_n_steps", "reference_grid", "schemes", "n_paths")
@@ -110,8 +114,7 @@ def read_reference_sensitivity_ranges(strong_sig):
         return {}
 
     with open(path, encoding="utf-8") as f:
-        rows = [r for r in csv.DictReader(f)
-                if r.get("sensitivity_kind", "strong_error") == "strong_error"]
+        rows = list(csv.DictReader(f))
     if not rows:
         return {}
 
@@ -125,7 +128,7 @@ def read_reference_sensitivity_ranges(strong_sig):
         )
         return {}
 
-    ranges, accepted, refused = {}, set(), {}
+    curves, accepted, refused = {}, set(), {}
     for row in rows:
         regime = row["regime"]
         want = strong_sig.get(regime)
@@ -144,16 +147,38 @@ def read_reference_sensitivity_ranges(strong_sig):
                    f"{sorted(ladder_refs)}")
         elif want["n_paths"] and {int(row["n_paths"])} != want["n_paths"]:
             why = f"n_paths {row['n_paths']} != {sorted(want['n_paths'])}"
-        elif not want["schemes"] <= frozenset(row["schemes"].split(",")):
-            why = "scheme set differs"
+        # Scheme coverage is deliberately NOT a compatibility condition. The
+        # ladder measures the four benchmark schemes; BLT reaches the figure
+        # from a separate addon run. A ladder covering a subset yields fewer
+        # bars, which is correct -- it is not evidence of a different
+        # experiment. Levels, reference grid and path count are what decide
+        # compatibility; the scheme list is recorded for provenance only.
         if why:
             refused.setdefault(regime, why)
             continue
         accepted.add(regime)
-        key = (regime, row["scheme"])
-        order = float(row["fitted_l2_order"])
-        lo, hi = ranges.get(key, (order, order))
-        ranges[key] = (min(lo, order), max(hi, order))
+        key = (regime, row["scheme"], int(row["reference_n_steps"]))
+        curves.setdefault(key, []).append(
+            (float(row["dt"]), float(row["l2"]))
+        )
+
+    # One fitted order per reference rung; the bar is the span across rungs.
+    # Fit with the SAME estimator as the plotted value -- the tail fit, which
+    # drops the coarsest level. Fitting the bar on all levels while the marker
+    # shows the tail fit puts the two on different estimators and the bar
+    # misses its own point for reasons that have nothing to do with the
+    # reference.
+    ranges = {}
+    for (regime, scheme, _ref), pts in curves.items():
+        pts = sorted(p for p in pts if p[1] > 0)
+        if len(pts) < 4:
+            continue
+        pts = pts[:-1]  # drop coarsest (largest dt)
+        x = np.log(np.array([p[0] for p in pts]))
+        y = np.log(np.array([p[1] for p in pts]))
+        order = float(np.polyfit(x, y, 1)[0])
+        lo, hi = ranges.get((regime, scheme), (order, order))
+        ranges[(regime, scheme)] = (min(lo, order), max(hi, order))
 
     for regime, why in sorted(refused.items()):
         print(f"reference-sensitivity: regime {regime} bars suppressed ({why})")
