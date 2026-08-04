@@ -66,27 +66,99 @@ def read_regime_csv(regime_name):
         return list(csv.DictReader(f))
 
 
-def read_reference_sensitivity_ranges():
-    """Fitted-order min/max per (regime, scheme) across HH reference grids.
+SENSITIVITY_SOURCES = (
+    Path("outputs/reference_sensitivity/strong_reference_sensitivity_orders.csv"),
+    Path("results/reference_sensitivity/strong_reference_sensitivity_orders.csv"),
+)
 
-    Reads the reference-sensitivity gate output if present; returns {} when the
-    gate has not been run.  These ranges are the evidence bound on how much a
-    quoted slope depends on the finite reference (essential in regimes D/E,
-    where the gate shows the ProjEuler and KLM slopes are not converged).
+SIGNATURE_FIELDS = ("coarse_n_steps", "reference_grid", "schemes", "n_paths")
+
+
+def strong_data_signature(rows_by_regime):
+    """What the plotted points actually are, per regime.
+
+    A sensitivity ladder may only be drawn over these points if it measured
+    the same experiment.  Reference resolution alone is not enough: a ladder
+    on levels 2^-4..2^-9 and one on 2^-3..2^-8 are different experiments even
+    at identical references, and mixing them is what put bars on this figure
+    that did not contain their own data point.
     """
-    path = Path("outputs/reference_sensitivity/strong_reference_sensitivity_orders.csv")
-    if not path.exists():
+    sig = {}
+    for regime, rows in rows_by_regime.items():
+        sig[regime] = {
+            "levels": frozenset(int(round(1.0 / float(r["dt"]))) for r in rows),
+            "reference_n_steps": {
+                int(r["reference_n_steps"]) for r in rows if r.get("reference_n_steps")
+            },
+            "n_paths": {int(r["n_paths"]) for r in rows if r.get("n_paths")},
+            "schemes": frozenset(r["scheme"] for r in rows),
+        }
+    return sig
+
+
+def read_reference_sensitivity_ranges(strong_sig):
+    """Fitted-order min/max per (regime, scheme) across HH reference rungs.
+
+    Returns {} unless a ladder is present whose experiment signature matches
+    the plotted data.  Refusing is the correct default: the historical ladder
+    ran levels 2^-4..2^-9 against references 2^-12..2^-15 while the canonical
+    benchmark runs 2^-3..2^-8 against 2^-22, and Chapter 6 states explicitly
+    that the two are not one sequence.
+    """
+    path = next((p for p in SENSITIVITY_SOURCES if p.exists()), None)
+    if path is None:
         return {}
 
-    ranges = {}
     with open(path, encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            if row.get("sensitivity_kind") != "strong_error":
-                continue
-            key = (row["regime"], row["scheme"])
-            order = float(row["fitted_l2_order"])
-            lo, hi = ranges.get(key, (order, order))
-            ranges[key] = (min(lo, order), max(hi, order))
+        rows = [r for r in csv.DictReader(f)
+                if r.get("sensitivity_kind", "strong_error") == "strong_error"]
+    if not rows:
+        return {}
+
+    missing = [k for k in SIGNATURE_FIELDS if k not in rows[0]]
+    if missing:
+        print(
+            f"reference-sensitivity: {path} carries no experiment signature "
+            f"(missing {', '.join(missing)}); bars suppressed. Re-run the "
+            "ladder from notebooks/kaggle/kaggle_reference_ladder_JAX.ipynb, "
+            "which stamps the signature onto every row."
+        )
+        return {}
+
+    ranges, accepted, refused = {}, set(), {}
+    for row in rows:
+        regime = row["regime"]
+        want = strong_sig.get(regime)
+        if want is None:
+            continue
+        ladder_levels = frozenset(
+            int(v) for v in row["coarse_n_steps"].split(",") if v
+        )
+        ladder_refs = {int(v) for v in row["reference_grid"].split(",") if v}
+        why = None
+        if ladder_levels != want["levels"]:
+            why = (f"levels {sorted(ladder_levels)} != "
+                   f"{sorted(want['levels'])}")
+        elif not want["reference_n_steps"] <= ladder_refs:
+            why = (f"reference {sorted(want['reference_n_steps'])} not a rung of "
+                   f"{sorted(ladder_refs)}")
+        elif want["n_paths"] and {int(row["n_paths"])} != want["n_paths"]:
+            why = f"n_paths {row['n_paths']} != {sorted(want['n_paths'])}"
+        elif not want["schemes"] <= frozenset(row["schemes"].split(",")):
+            why = "scheme set differs"
+        if why:
+            refused.setdefault(regime, why)
+            continue
+        accepted.add(regime)
+        key = (regime, row["scheme"])
+        order = float(row["fitted_l2_order"])
+        lo, hi = ranges.get(key, (order, order))
+        ranges[key] = (min(lo, order), max(hi, order))
+
+    for regime, why in sorted(refused.items()):
+        print(f"reference-sensitivity: regime {regime} bars suppressed ({why})")
+    if accepted:
+        print(f"reference-sensitivity: matched ladder for {sorted(accepted)}")
     return ranges
 
 
@@ -94,7 +166,12 @@ def main():
     regimes_cfg = load_config("regimes.yaml")
     shared = regimes_cfg["shared"]
 
-    sensitivity_ranges = read_reference_sensitivity_ranges()
+    # Build the plotted data's signature first: the sensitivity ladder is
+    # admitted only if it measured the same experiment.
+    rows_by_regime = {r: read_regime_csv(r) for r in REGIMES}
+    sensitivity_ranges = read_reference_sensitivity_ranges(
+        strong_data_signature(rows_by_regime)
+    )
 
     summary = []
     for regime_name in REGIMES:
