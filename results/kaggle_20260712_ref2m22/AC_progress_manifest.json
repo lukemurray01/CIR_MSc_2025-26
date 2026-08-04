@@ -1,0 +1,12 @@
+{
+  "stage": "partial",
+  "updated_utc": "2026-07-12T23:59:00+00:00",
+  "run_config_hash": "f1a1377ad11a430f",
+  "batch_contribution_rows": 3432,
+  "diagnostic_rows": 96,
+  "completed_batches": 143,
+  "expected_batches": 200,
+  "completed_batch_fraction": 0.715,
+  "batch_contribution_csv": "/kaggle/working/cir_benchmark_suite_jax_outputs/results/jax_strong_error_batch_contributions.csv",
+  "partial_diagnostics_csv": "/kaggle/working/cir_benchmark_suite_jax_outputs/results/jax_strong_error_partial.csv"
+}

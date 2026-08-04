@@ -86,6 +86,11 @@ def load_errors(regimes):
     frames = []
     for regime in regimes:
         d = pd.read_csv(results_path(f"strong_error_regime_{regime}.csv"))
+        # The per-regime files carry BLT since the 2026-07-12 provenance merge
+        # (hash 6401f6574377499d).  This figure sources BLT from the separate
+        # blt_strong_error.csv below, which carries the dual-reference columns
+        # it needs, so drop BLT here or it is counted twice.
+        d = d[d["scheme"] != "BLT"]
         frames.append(d.assign(steps_per_path=d["mean_steps_per_path"])[
             ["regime", "scheme", "dt", "l1", "steps_per_path"]
         ])

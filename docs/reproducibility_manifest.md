@@ -10,14 +10,46 @@ They should be regenerated from the commands below rather than committed by
 default. The repository ignores `figures/*.pdf`, `figures/*.png`, `results/`,
 `outputs/`, and CSV files.
 
+## Canonical strong-error data
+
+`results/strong_error_regime_{A..E}.csv` are **committed data, not regenerable
+locally**: they are 20,000-path GPU runs against a streamed Hefter--Herzwurm
+reference at `h_ref = 2^-22`, on levels `h = 2^-3 ... 2^-8`. Every row carries
+its own `run_config_hash`, so provenance travels with the data. They are the
+concatenation of three Kaggle runs, whose raw outputs are archived under
+`results/kaggle_20260712_ref2m22/`:
+
+| Rows | Kaggle run | `run_config_hash` | Notes |
+|---|---|---|---|
+| Regimes A, B, C — FTE, ProjEuler, KL, KLM | `12.07.2026 CIR benchmark GPU run A-C` | `f1a1377ad11a430f` | 20,000/20,000 paths. Its regime-D rows are **partial** (11,776/20,000) and are excluded |
+| Regimes D, E — FTE, ProjEuler, KL, KLM | `12-07-2026-cir-benchmark-gpu-run-d-e-only` | `0ceb47d539211b6e` | 20,000/20,000 paths; the authoritative D and E |
+| Regimes A--E — BLT | `blt-addon-strong-error-run-13-07-2026` | `6401f6574377499d` | Emits the identical 21-column schema, so it concatenates directly. Variant is `splitting` in A--C and `modified-splitting` in D--E |
+
+Merge rules, if this is ever rebuilt: take A/B/C from the first run and D/E from
+the second (never the first run's partial D), admit only rows with
+`completed_paths == n_paths`, and check for duplicate `(regime, scheme, dt)`
+keys.
+
+### Two BLT files, deliberately
+
+- `results/strong_error_regime_{R}.csv` — BLT rows from the Kaggle run, single
+  `l1`/`l2` against the common `h_ref = 2^-22` HH reference. Used by
+  `fig_order_summary.py` so the cross-regime figure carries all five schemes.
+- `results/blt_strong_error.csv` — the local `run_blt_strong_error.py` output,
+  with the dual-reference columns (`l1_vs_blt_ref`, `l1_vs_hh_ref`, ...) that
+  `fig_work_precision.py` needs.
+
+These are different runs with different schemas. `fig_work_precision.py`
+explicitly drops BLT from the per-regime frames so it is not counted twice.
+
 ## Current Thesis Commands
 
 | Purpose | Command | Main outputs | Status |
 |---|---|---|---|
-| CIR strong-error benchmark against HH fine reference | `python experiments/run_strong_error.py` | `results/strong_error_regime_{R}.csv`, `figures/strong_error_regime_{R}.pdf` | Thesis benchmark target |
+| CIR strong-error benchmark against HH fine reference | **canonical data is committed, see "Canonical strong-error data" below**; local dev runner is `python experiments/run_strong_error.py` | `results/strong_error_regime_{R}.csv`, `figures/strong_error_regime_{R}.pdf` | Thesis benchmark target. **Do not commit local runner output over the committed files** — it writes the same names in a different (older) schema at laptop resolution |
 | Reference-sensitivity gate | `python experiments/run_reference_sensitivity.py`; full Kaggle route: `notebooks/kaggle/kaggle_reference_sensitivity.ipynb` | `outputs/reference_sensitivity/strong_reference_sensitivity*.csv`, `outputs/reference_sensitivity/fig3_reference_sensitivity*.csv`; Kaggle writes `/kaggle/working/cir_reference_sensitivity_outputs` | Required before quoting production fitted slopes |
 | Fast CIR strong-error smoke | `python experiments/run_strong_error.py --n-paths 2000 --regimes A C E` | Same output names for selected regimes | Supervisor/examiner smoke run |
-| Cross-regime order summary | `python experiments/fig_order_summary.py` | `results/fig_order_vs_delta_summary.csv`, `figures/fig_order_vs_delta_summary.pdf` | Requires strong-error CSVs first |
+| Cross-regime order summary | `python experiments/fig_order_summary.py` | `results/fig_order_vs_delta_summary.csv`, `figures/fig_order_vs_delta_summary.pdf` | Requires strong-error CSVs first. Emits five schemes (BLT included) since the 2026-08-04 provenance merge |
 | KLM backstop diagnostic | `python experiments/run_klm_diagnostic.py` | `results/klm_backstop_diagnostic.csv`, `figures/klm_backstop_diagnostic.pdf` | Supports KLM limitation wording |
 | KL adaptive-splitting paper Fig. 2/3 smoke | `python experiments/kl_adaptive_splitting_paper.py --mode smoke` | `results/kl_adaptive_splitting_smoke_errors.csv`, `results/kl_adaptive_splitting_smoke_rates.csv`, `figures/kl_adaptive_splitting_smoke_combined.pdf` | Paper-reproduction smoke; full run via `notebooks/kaggle/kaggle_kl_adaptive_splitting_paper.ipynb` |
 | KL adaptive-splitting paper Fig. 2/3 JAX smoke | `python experiments/kl_adaptive_splitting_paper_jax.py --mode smoke` | `results/kl_adaptive_splitting_smoke_jax_errors.csv`, `results/kl_adaptive_splitting_smoke_jax_rates.csv`, `figures/kl_adaptive_splitting_smoke_jax_combined.pdf` | GPU/JAX implementation smoke; full run via `notebooks/kaggle/kaggle_kl_adaptive_splitting_paper_JAX.ipynb` |
