@@ -10,6 +10,46 @@ They should be regenerated from the commands below rather than committed by
 default. The repository ignores `figures/*.pdf`, `figures/*.png`, `results/`,
 `outputs/`, and CSV files.
 
+## Kaggle provenance: which notebook produced which thesis artefact
+
+Ten Kaggle notebooks generated thesis-facing output. Everything else on the
+account is scratch, superseded, or from an unrelated project. Titles below are
+the agreed convention `YYYY-MM-DD · <output artefact>`; **slugs are immutable**
+(Kaggle derives the URL from the kernel id, and retitling does not change it),
+so the slugs cited here stay valid regardless of display title.
+
+| Slug | Ran | Config hash | Thesis artefact | Verified by |
+|---|---|---|---|---|
+| `12-07-2026-cir-benchmark-gpu-run-d-e-only` | 2026-07-12 (**v2**) | `f1a1377ad11a430f` | `strong_error_regime_{A,B,C}` → Table strong-orders A–C, `fig_order_vs_delta_summary`, `strong_error_grid_5scheme` | refit: 12/12 entries |
+| ″ (same notebook) | 2026-07-13 (**v3**) | `0ceb47d539211b6e` | `strong_error_regime_{D,E}` → same figures, D/E rows | refit: 8/8 entries |
+| `blt-addon-strong-error-run-13-07-2026` | 2026-07-13 | `6401f6574377499d` | `blt_strong_error` → BLT row of the strong-order table | refit: 5/5 entries |
+| `cir-ref-ladder-matched-d-04-08-2026` | 2026-08-04 | `e2cec9b6ee760e24` | reference-sensitivity bars, regime D | signature match |
+| `cir-ref-ladder-matched-e-04-08-2026` | 2026-08-04 | `54225d0399e0de68` | reference-sensitivity bars, regime E | signature match |
+| `reference-sensitivity` | 2026-07-10 | — | `reference_pinning`, `strong_reference_sensitivity*` | emits exactly the four files in `results/reference_sensitivity/` |
+| `weak-err-2-0-02-08-26` | 2026-08-03 | `e1178653b30c7aa6` | `weak_error_regime_{A..E}`, `weak_error_orders.csv` | config hash in output |
+| `klm-fig-2-a-reconstruction` | 2026-06-16 | — | `fig2a_bridge_streaming_jax_h25` | log: `h_ref=2^-25, N_REF=33,554,432, M=1000` |
+| `cpu-vs-gpu-timing-10-07-2026` | 2026-07-10 | — | `cpu_gpu_timing.csv` → `cpu_gpu_speedup_combined`, `work_precision` | all 50 rows identical to the committed CSV |
+| `cev-proto-type` | 2026-07-27 | `a379d457538e052f` | CEV splitting prototype (section not yet written) | config hash in output |
+| `full-diagnostic-jax-reconstruction-of-klm-fig-3` | 2026-06-16 | — | `fig3_from_kaggle_csv_h25_paper_grid` | **pixel-identical** to the thesis copy (0 differing pixels) |
+
+### Two notes that matter
+
+**A–C and D–E are the same notebook at different versions.** `kaggle kernels
+output` returns only the latest version, so pulling that slug today yields the
+v3 (D–E) output. The v2 (A–C) output is archived under
+`results/kaggle_20260712_ref2m22/`. Do not expect to re-download it.
+
+**`cir-benchmarks-full-gpu` is NOT the A–C source**, despite the name and the
+matching date. Its current version emits the older ten-column schema with no
+`run_config_hash`, and refitting it disagrees with the published A–C orders for
+KLM and ProjEuler. It is a superseded run.
+
+**Open item:** `full-diagnostic-jax-reconstruction-of-klm-fig-3` emits
+`fig3_full_diagnostic_jax_h25_*`, but the committed CSV in `results/` is
+`fig3_full_diagnostic_jax_h13_*` — a different, coarser run. The thesis
+*figure* is confirmed to come from the h25 Kaggle run; the committed *data* is
+h13. These should be reconciled the same way the strong-error data was.
+
 ## Canonical strong-error data
 
 `results/strong_error_regime_{A..E}.csv` are **committed data, not regenerable
