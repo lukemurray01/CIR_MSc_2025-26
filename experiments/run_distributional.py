@@ -6,12 +6,22 @@
 # included as a Monte Carlo noise floor: its KS/W1 values show the sampling
 # error at the chosen number of paths, which no scheme can beat.
 #
+# That floor is a DISTRIBUTION, not a line.  For an exact sample of size n the
+# KS statistic has mean 0.8687/sqrt(n) and standard deviation 0.2611/sqrt(n),
+# a 30% relative spread, so a scheme whose discretisation error is small
+# compared with n^{-1/2} falls below any single exact draw roughly half the
+# time.  The floor is therefore estimated by replication and plotted as a
+# band; a curve inside it is at the resolution limit of the run and is not
+# ranked against the others.
+#
 # Usage:
 #   uv run python experiments/run_distributional.py
-#   uv run python experiments/run_distributional.py --n-paths 5000  # smoke
+#   uv run python experiments/run_distributional.py --n-paths 5000 \
+#       --n-floor-replicates 20            # smoke
 #
 # Outputs:
 #   results/distributional_diagnostics.csv
+#   results/distributional_floor_band.csv
 #   figures/distributional_diagnostics.pdf
 
 import sys
@@ -56,6 +66,17 @@ def get_args():
     parser = argparse.ArgumentParser(description="Terminal-law diagnostics.")
     parser.add_argument("--n-paths", type=int, default=200000)
     parser.add_argument("--regimes", nargs="+", default=["A", "C", "E"])
+    parser.add_argument(
+        "--n-floor-replicates",
+        type=int,
+        default=200,
+        help=(
+            "Independent exact samples used to estimate the Monte Carlo floor. "
+            "One draw is not a threshold: at 200,000 paths the KS statistic of "
+            "an exact sample has a 30%% relative spread, so a scheme sitting at "
+            "the floor lands below a single draw about half the time."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -107,6 +128,7 @@ def main():
     schemes = ["FTE", "HH", "ProjEuler", "KLM"]
 
     rows = []
+    band_rows = []
     for regime_name in args.regimes:
         sigma = regimes_cfg["regimes"][regime_name]["sigma"]
         params = {
@@ -117,7 +139,29 @@ def main():
         }
         law_args = (params["x0"], params["kappa"], params["theta"], sigma, T)
 
-        # Monte Carlo noise floor from the exact sampler itself.
+        # Monte Carlo noise floor from the exact sampler itself.  This is a
+        # DISTRIBUTION, not a threshold: both statistics are random at finite
+        # sample size, so a single draw cannot say whether a scheme is at the
+        # floor or merely got a lucky seed.  Replicating gives a band.
+        ks_reps = np.empty(args.n_floor_replicates)
+        w1_reps = np.empty(args.n_floor_replicates)
+        for r in range(args.n_floor_replicates):
+            rep = exact_terminal_samples(
+                *law_args, n_paths=args.n_paths, rng=make_rng(master_seed + 1 + r)
+            )
+            ks_reps[r] = ks_statistic_vs_exact(rep, *law_args)
+            w1_reps[r] = wasserstein1_vs_exact(rep, *law_args)
+
+        band = {"regime": regime_name, "n_paths": args.n_paths,
+                "n_replicates": args.n_floor_replicates}
+        for name, vals in (("ks", ks_reps), ("w1", w1_reps)):
+            band[f"{name}_mean"] = float(vals.mean())
+            band[f"{name}_sd"] = float(vals.std(ddof=1))
+            for q in (5, 50, 95):
+                band[f"{name}_p{q:02d}"] = float(np.percentile(vals, q))
+        band_rows.append(band)
+
+        # The single-draw floor is retained so the row schema is unchanged.
         rng = make_rng(master_seed)
         exact_samples = exact_terminal_samples(
             *law_args, n_paths=args.n_paths, rng=rng
@@ -134,7 +178,12 @@ def main():
                 "n_paths": args.n_paths,
             }
         )
-        print(f"[{regime_name}] exact-sampler floor: KS={ks_floor:.4f} W1={w1_floor:.2e}")
+        print(
+            f"[{regime_name}] exact-sampler floor over {args.n_floor_replicates}"
+            f" replicates: KS {band['ks_mean']:.5f} +/- {band['ks_sd']:.5f}"
+            f" (5-95% {band['ks_p05']:.5f}-{band['ks_p95']:.5f}); "
+            f"W1 {band['w1_mean']:.3e} +/- {band['w1_sd']:.3e}"
+        )
 
         for scheme in schemes:
             for n_steps in N_STEPS_GRID:
@@ -163,6 +212,13 @@ def main():
         writer.writerows(rows)
     print(f"wrote {csv_path}")
 
+    band_path = results_path("distributional_floor_band.csv")
+    with open(band_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(band_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(band_rows)
+    print(f"wrote {band_path}")
+
     fig, axes = plt.subplots(
         2, len(args.regimes), figsize=(4.0 * len(args.regimes), 7.2), squeeze=False
     )
@@ -178,12 +234,18 @@ def main():
                 v = np.array([r[metric] for r in scheme_rows])
                 ax.loglog(n, v, label=scheme, **SCHEME_STYLES[scheme])
 
-            floor = next(
-                r[metric]
-                for r in rows
-                if r["regime"] == regime_name and r["scheme"] == "Exact"
+            band = next(b for b in band_rows if b["regime"] == regime_name)
+            ax.axhspan(
+                band[f"{metric}_p05"],
+                band[f"{metric}_p95"],
+                color="0.80",
+                zorder=0,
+                label="exact-sampler floor, 5--95%",
             )
-            ax.axhline(floor, color="k", ls="--", lw=0.8, label="exact-sampler floor")
+            ax.axhline(
+                band[f"{metric}_p50"], color="k", ls="--", lw=0.8, zorder=1,
+                label="exact-sampler floor, median",
+            )
             ax.set_xlabel("number of steps")
             ax.set_ylabel("KS statistic" if metric == "ks" else "Wasserstein-1")
             ax.set_title(f"Regime {regime_name}")
@@ -191,7 +253,13 @@ def main():
             if j == 0:
                 ax.legend(fontsize=7)
 
-    fig.suptitle(f"Terminal-law diagnostics vs exact CIR law ({args.n_paths} paths)")
+    fig.suptitle(
+        f"Terminal-law diagnostics vs exact CIR law ({args.n_paths:,} paths).\n"
+        f"Shaded: 5--95% of the exact sampler's own statistic over "
+        f"{args.n_floor_replicates} replicates. A curve inside the band is at "
+        "the resolution limit, not better than exact.",
+        fontsize=9,
+    )
     fig.tight_layout()
     fig_path = figure_path("distributional_diagnostics.pdf")
     fig.savefig(fig_path)
