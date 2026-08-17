@@ -1,0 +1,32 @@
+{
+  "hash": "e1178653b30c7aa6",
+  "config": {
+    "n_paths": 200000,
+    "n_steps": [
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "schemes": [
+      "BLT",
+      "FTE",
+      "HH",
+      "IF",
+      "KL",
+      "KLM",
+      "ProjEuler"
+    ],
+    "max_adaptive_steps": 1024,
+    "control_variate": true,
+    "master_seed": 120339106,
+    "T": 1.0,
+    "batch_size": 25000
+  }
+}
